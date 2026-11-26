@@ -65,6 +65,15 @@ jobs:
           sed -i 's/\r$//' gradlew || true
           chmod +x gradlew
 
+      # Clé de signature debug STABLE (identique au poste de dev) : sinon chaque run
+      # CI régénère ~/.android/debug.keystore -> signature différente à chaque nightly
+      # -> la mise à jour in-app échoue avec INSTALL_FAILED_UPDATE_INCOMPATIBLE
+      # ("App not installed"). La clé est embarquée en base64 (texte) dans le repo.
+      - name: Restaurer la clé de signature debug stable
+        run: |
+          mkdir -p ~/.android
+          base64 -d keystore/debug.keystore.b64 > ~/.android/debug.keystore
+
       - name: Compiler l'APK debug
         run: ./gradlew assembleDebug --no-daemon
 

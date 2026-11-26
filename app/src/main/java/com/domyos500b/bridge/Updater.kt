@@ -25,8 +25,25 @@ object ApkUpdater {
     private const val REPO = "mjcc30/android-bridge-domyos500B"
     private const val APK_NAME = "app-debug.apk"
 
+    /** URL directe de la release roulante « nightly » (stable, hors rate-limit API). */
+    private const val DIRECT_NIGHTLY_URL =
+        "https://github.com/$REPO/releases/download/nightly/$APK_NAME"
+
     /** URL directe de l'APK (release nightly, fallback latest). Null si rien trouvé. */
     suspend fun latestApkUrl(): String? = withContext(Dispatchers.IO) {
+        // 1) URL directe nightly d'abord : l'API api.github.com est souvent rate-limitée
+        //    en non authentifié (403), ce qui empêcherait toute mise à jour.
+        try {
+            val conn = URL(DIRECT_NIGHTLY_URL).openConnection() as HttpURLConnection
+            conn.requestMethod = "HEAD"
+            conn.instanceFollowRedirects = true
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
+            if (conn.responseCode == 200) return@withContext DIRECT_NIGHTLY_URL
+            conn.disconnect()
+        } catch (_: Exception) {
+        }
+        // 2) Fallback via l'API GitHub (release nightly puis latest).
         val endpoints = listOf(
             "https://api.github.com/repos/$REPO/releases/tags/nightly",
             "https://api.github.com/repos/$REPO/releases/latest"
@@ -92,13 +109,27 @@ object ApkUpdater {
         }
 
         val apk = File(context.getExternalFilesDir(null), APK_NAME)
+        if (!apk.exists() || apk.length() < 1_000_000) {
+            BridgeBus.log("Updater: APK absent ou trop petit (${if (apk.exists()) apk.length() else -1} o)")
+            return@withContext false
+        }
+        val head = ByteArray(2)
+        apk.inputStream().use { it.read(head) }
+        if (head[0] != 'P'.code.toByte() || head[1] != 'K'.code.toByte()) {
+            BridgeBus.log("Updater: fichier téléchargé corrompu (pas de signature ZIP 'PK')")
+            return@withContext false
+        }
         BridgeBus.log("Updater: APK téléchargé (${apk.length()} o) -> lancement de l'installation")
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apk)
         withContext(Dispatchers.Main) {
-            val intent = Intent(Intent.ACTION_VIEW)
-                .setDataAndType(uri, "application/vnd.android.package-archive")
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
+            try {
+                val intent = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                BridgeBus.log("Updater: lancement de l'installation échoué: ${e.message}")
+            }
         }
         true
     }
