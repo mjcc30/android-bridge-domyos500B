@@ -23,7 +23,7 @@ object DomyosParser {
 
     fun parse(packet: ByteArray): RowerMetrics? {
         if (packet.size < 19) return null
-        if (packet[0].toInt() != 0xF0 || packet[1].toInt() != 0xBC) return null
+        if ((packet[0].toInt() and 0xFF) != 0xF0 || (packet[1].toInt() and 0xFF) != 0xBC) return null
 
         fun u16be(o: Int): Int =
             ((packet[o].toInt() and 0xFF) shl 8) or (packet[o + 1].toInt() and 0xFF)

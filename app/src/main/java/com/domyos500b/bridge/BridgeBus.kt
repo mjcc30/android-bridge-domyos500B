@@ -44,6 +44,7 @@ object BridgeBus {
 
     fun log(line: String) {
         val ts = tsFormat.format(Date())
+        android.util.Log.i("BridgeBus", line)
         uiState.update { it.copy(logs = (it.logs + "$ts  $line").takeLast(MAX_LOGS)) }
     }
 
