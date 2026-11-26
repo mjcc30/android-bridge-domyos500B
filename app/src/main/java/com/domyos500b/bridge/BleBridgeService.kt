@@ -389,6 +389,11 @@ class BleBridgeService : Service() {
             ?: throw Exception("caractéristique write Domyos absente")
         domyosWriteChar = writeChar
 
+        // Indispensable côté Android : écrire le CCCD ne suffit pas, il faut aussi
+        // activer la notification localement, sinon onCharacteristicChanged n'est
+        // jamais appelé et aucun paquet `f0 bc` n'est reçu.
+        g.setCharacteristicNotification(notifyChar, true)
+
         val cccd = notifyChar.getDescriptor(BleConstants.CCCD)
         val notifyOk = queue.enqueue {
             cccd != null && awaitOp("CCCD Domyos") {
@@ -439,6 +444,11 @@ class BleBridgeService : Service() {
             ?: throw Exception("caractéristique 0x2AD1 absente")
         val cp = service.getCharacteristic(BleConstants.FTMS_CONTROL_POINT)
             ?: throw Exception("caractéristique 0x2AD9 absente")
+
+        // Active la réception locale des notifications/indications (le CCCD seul
+        // ne déclenche pas onCharacteristicChanged sur Android).
+        g.setCharacteristicNotification(rower, true)
+        g.setCharacteristicNotification(cp, true)
 
         val cccdRower = rower.getDescriptor(BleConstants.CCCD)
         val cccdCp = cp.getDescriptor(BleConstants.CCCD)
