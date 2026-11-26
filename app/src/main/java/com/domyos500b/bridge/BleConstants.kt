@@ -27,8 +27,12 @@ object BleConstants {
     /** 0x2902 — Client Characteristic Configuration Descriptor. */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    /** Nom BLE diffusé vers MyWhoosh. */
-    const val DEVICE_NAME = "Domyos500B-Bridge"
+    /**
+     * Nom BLE diffusé vers MyWhoosh. « PM5 » = nom du moniteur Concept2 reconnu
+     * nativement par MyWhoosh (même nom que le pont virtuel qdomyos-zwift) :
+     * MyWhoosh liste de préférence un rameur FTMS annoncé sous ce nom.
+     */
+    const val DEVICE_NAME = "PM5"
 
     /**
      * Valeur de 0x2ACC (4 octets, little-endian).

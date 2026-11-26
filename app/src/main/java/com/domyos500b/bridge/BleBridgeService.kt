@@ -52,7 +52,7 @@ import kotlin.coroutines.resume
  * - Côté client : scan 0x1826, connexion TRANSPORT_LE, notifications 0x2AD1,
  *   indications 0x2AD9, puis Control Point 0x00 (Request Control) + 0x07 (Start/Resume).
  *   Toutes les opérations GATT passent par [GattCommandQueue] (sérialisées + timeout).
- * - Côté serveur : service FTMS exposé sous le nom "Domyos500B-Bridge", trame 0x2AD1
+ * - Côté serveur : service FTMS exposé sous le nom "PM5" (reconnu par MyWhoosh), trame 0x2AD1
  *   normalisée par [FtmsParser] et notifiée à 4 Hz (250 ms).
  *
  * Règle Android 16 : startForeground() n'est appelé qu'APRÈS vérification des
