@@ -17,6 +17,19 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        // Clé debug STABLE embarquée (keystore/debug.keystore.b64 décodé en
+        // keystore/debug.keystore, restauré pareil en local et en CI) : sinon chaque
+        // build CI aurait une signature différente et la mise à jour in-app échouerait
+        // (INSTALL_FAILED_UPDATE_INCOMPATIBLE -> « App not installed »).
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
