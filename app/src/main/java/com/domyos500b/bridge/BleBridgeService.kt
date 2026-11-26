@@ -49,9 +49,12 @@ import kotlin.coroutines.resume
  *
  *   Domyos 500B (périphérique FTMS 0x1826)  --GATT client-->  [CE SERVICE]  --GATT serveur + advertising-->  MyWhoosh
  *
- * - Côté client : scan 0x1826, connexion TRANSPORT_LE, notifications 0x2AD1,
- *   indications 0x2AD9, puis Control Point 0x00 (Request Control) + 0x07 (Start/Resume).
- *   Toutes les opérations GATT passent par [GattCommandQueue] (sérialisées + timeout).
+ * - Côté client : scan 0x1826 + service propriétaire Domyos 49535343-…, connexion
+ *   TRANSPORT_LE. Si le rameur expose FTMS : notifications 0x2AD1, indications 0x2AD9,
+ *   Control Point 0x00 + 0x07. Sinon (Domyos 500B) : protocole propriétaire « changyow »
+ *   (init `f0 c8 01 b9` / `f0 c9 b9` / `f0 a3 93`, keepalive `f0 ac 9c` 1 Hz, paquets
+ *   `f0 bc …` parsés par [DomyosParser]). Toutes les opérations GATT passent par
+ *   [GattCommandQueue] (sérialisées + timeout).
  * - Côté serveur : service FTMS exposé sous le nom "PM5" (reconnu par MyWhoosh), trame 0x2AD1
  *   normalisée par [FtmsParser] et notifiée à 4 Hz (250 ms).
  *
@@ -91,6 +94,13 @@ class BleBridgeService : Service() {
 
     @Volatile
     private var running = false
+
+    /** Session propriétaire Domyos active (keepalive en cours). */
+    @Volatile
+    private var proprietaryActive = false
+
+    /** Caractéristique d'écriture du protocole propriétaire (quand actif). */
+    private var domyosWriteChar: BluetoothGattCharacteristic? = null
 
     /** Continuation de l'opération GATT en cours (la file garantit l'unicité). */
     private var pending: Continuation<Boolean>? = null
@@ -173,6 +183,7 @@ class BleBridgeService : Service() {
 
     private fun shutdown() {
         running = false
+        proprietaryActive = false
         scope.cancel()
         try { advertiser?.stopAdvertising(advertiseCallback) } catch (_: Exception) {}
         try { scanner?.stopScan(scanCallback) } catch (_: Exception) {}
@@ -227,16 +238,17 @@ class BleBridgeService : Service() {
             return
         }
         scanner = btAdapter.bluetoothLeScanner ?: return
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(BleConstants.FTMS_SERVICE))
-            .build()
+        val filters = listOf(
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(BleConstants.FTMS_SERVICE)).build(),
+            ScanFilter.Builder().setServiceUuid(ParcelUuid(BleConstants.DOMYOS_SERVICE)).build()
+        )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
         try {
-            scanner?.startScan(listOf(filter), settings, scanCallback)
-            BridgeBus.log("Scan BLE démarré (service 0x1826)")
+            scanner?.startScan(filters, settings, scanCallback)
+            BridgeBus.log("Scan BLE démarré (services 0x1826 + 49535343-…)")
         } catch (se: SecurityException) {
             BridgeBus.log("Scan refusé: ${se.message}")
         }
@@ -248,7 +260,9 @@ class BleBridgeService : Service() {
             val device = result.device
             val name = try { device.name } catch (_: SecurityException) { null }
             if (name != null && !name.contains("Domyos", ignoreCase = true) &&
-                result.scanRecord?.serviceUuids?.none { it.uuid == BleConstants.FTMS_SERVICE } == true
+                result.scanRecord?.serviceUuids?.none {
+                    it.uuid == BleConstants.FTMS_SERVICE || it.uuid == BleConstants.DOMYOS_SERVICE
+                } == true
             ) return
             BridgeBus.log("Scan: ${name ?: "?"} ${device.address} RSSI=${result.rssi}")
             connectToRower(device)
@@ -280,13 +294,15 @@ class BleBridgeService : Service() {
                         queue.enqueue { awaitOp("requestMtu") { g.requestMtu(MTU_REQUEST) } }
                         val discovered = queue.enqueue { awaitOp("discoverServices") { g.discoverServices() } }
                         if (!discovered) throw Exception("découverte des services échouée")
-                        setupFtmSession(g)
+                        setupSession(g)
                     } catch (e: Exception) {
-                        BridgeBus.log("Session FTMS: ${e.message}")
+                        BridgeBus.log("Session rameur: ${e.message}")
                     }
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 BridgeBus.setDomyosConnected(false)
+                proprietaryActive = false
+                domyosWriteChar = null
                 BridgeBus.log("Domyos DÉCONNECTÉ (status=$status) -> reconnexion auto dans ${RECONNECT_DELAY_MS} ms")
                 resumePending(false)
                 try { g.close() } catch (_: Exception) {}
@@ -316,14 +332,11 @@ class BleBridgeService : Service() {
             if (characteristic.uuid == BleConstants.ROWER_DATA) {
                 BridgeBus.log("RX 2AD1 <- ${value.toHex()}")
                 val m = FtmsParser.parse(value)
-                if (m != null) {
-                    BridgeBus.publish(m)
-                    latestFrame = FtmsParser.buildNormalizedFrame(m)
-                    BridgeBus.log(
-                        "   parse: ${m.strokeRateSpm} spm | ${m.strokeCount} coups | " +
-                            "${m.distanceMeters} m | pace=${m.paceSecPer500m}s/500m | ${m.powerWatts} W"
-                    )
-                }
+                if (m != null) publishMetrics(m)
+            } else if (characteristic.uuid == BleConstants.DOMYOS_NOTIFY) {
+                BridgeBus.log("RX Domyos <- ${value.toHex()}")
+                val m = DomyosParser.parse(value)
+                if (m != null) publishMetrics(m)
             }
         }
 
@@ -341,6 +354,80 @@ class BleBridgeService : Service() {
             status: Int
         ) {
             resumePending(status == BluetoothGatt.GATT_SUCCESS)
+        }
+    }
+
+    private fun publishMetrics(m: RowerMetrics) {
+        BridgeBus.publish(m)
+        latestFrame = FtmsParser.buildNormalizedFrame(m)
+        BridgeBus.log(
+            "   parse: ${m.strokeRateSpm} spm | ${m.strokeCount} coups | " +
+                "${m.distanceMeters} m | pace=${m.paceSecPer500m}s/500m | ${m.powerWatts} W"
+        )
+    }
+
+    /**
+     * Essaie d'abord le FTMS standard (0x1826), puis repli sur le protocole
+     * propriétaire Domyos (service 49535343-…) si le rameur ne l'expose pas.
+     */
+    private suspend fun setupSession(g: BluetoothGatt) {
+        val hasFtms = g.services?.any { it.uuid == BleConstants.FTMS_SERVICE } == true
+        if (hasFtms) {
+            setupFtmSession(g)
+        } else {
+            setupProprietarySession(g)
+        }
+    }
+
+    /** Session via le protocole propriétaire Domyos « changyow ». */
+    private suspend fun setupProprietarySession(g: BluetoothGatt) {
+        val service = g.services?.firstOrNull { it.uuid == BleConstants.DOMYOS_SERVICE }
+            ?: throw Exception("ni FTMS 0x1826 ni service Domyos 49535343-… trouvés sur le rameur")
+        val notifyChar = service.getCharacteristic(BleConstants.DOMYOS_NOTIFY)
+            ?: throw Exception("caractéristique notify Domyos absente")
+        val writeChar = service.getCharacteristic(BleConstants.DOMYOS_WRITE)
+            ?: throw Exception("caractéristique write Domyos absente")
+        domyosWriteChar = writeChar
+
+        val cccd = notifyChar.getDescriptor(BleConstants.CCCD)
+        val notifyOk = queue.enqueue {
+            cccd != null && awaitOp("CCCD Domyos") {
+                g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                    BluetoothGatt.GATT_SUCCESS
+            }
+        }
+        BridgeBus.log("CCCD notify Domyos: ${if (notifyOk) "OK" else "ÉCHEC"}")
+
+        // Séquence d'init « changyow », puis keepalive 1 Hz.
+        for (pkt in BleConstants.DOMYOS_INIT) {
+            writeDomyos(pkt)
+            delay(150)
+        }
+        proprietaryActive = true
+        startKeepalive()
+        BridgeBus.log("Session Domyos propriétaire active (init envoyée, keepalive 1 Hz)")
+    }
+
+    private suspend fun writeDomyos(value: ByteArray) {
+        val g = gatt ?: return
+        val ch = domyosWriteChar ?: return
+        BridgeBus.log("TX Domyos -> ${value.toHex()}")
+        val ok = queue.enqueue {
+            awaitOp("write Domyos") {
+                g.writeCharacteristic(ch, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
+                    BluetoothGatt.GATT_SUCCESS
+            }
+        }
+        if (!ok) BridgeBus.log("Écriture Domyos ${value.toHex()} : ÉCHEC/timeout")
+    }
+
+    /** Keepalive `f0 ac 9c` chaque seconde tant que la session propriétaire est active. */
+    private fun startKeepalive() {
+        scope.launch {
+            while (running && proprietaryActive) {
+                delay(1_000)
+                if (proprietaryActive) writeDomyos(BleConstants.DOMYOS_KEEPALIVE)
+            }
         }
     }
 

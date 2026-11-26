@@ -49,4 +49,21 @@ object BleConstants {
     // Réponse Control Point : 0x80 (Response Code) + opcode + result (0x01 = Success)
     const val RESPONSE_OPCODE: Byte = 0x80.toByte()
     const val RESPONSE_SUCCESS: Byte = 0x01
+
+    // ---- Protocole propriétaire Domyos (Domyos-ROW-*, ex. rameur 500B) ----
+    // Le 500B n'expose PAS toujours le service FTMS 0x1826 en GATT : il parle le
+    // protocole propriétaire « changyow » sur le service 49535343-…
+    val DOMYOS_SERVICE: UUID = UUID.fromString("49535343-fe7d-4ae5-8fa9-9fafd205e455")
+    val DOMYOS_WRITE: UUID = UUID.fromString("49535343-8841-43f4-a8d4-ecbe34729bb3")
+    val DOMYOS_NOTIFY: UUID = UUID.fromString("49535343-1e4d-4bd9-ba61-23c647249616")
+
+    /** Séquence d'init « changyow » envoyée à chaque connexion. */
+    val DOMYOS_INIT: List<ByteArray> = listOf(
+        byteArrayOf(0xF0.toByte(), 0xC8.toByte(), 0x01, 0xB9.toByte()),
+        byteArrayOf(0xF0.toByte(), 0xC9.toByte(), 0xB9.toByte()),
+        byteArrayOf(0xF0.toByte(), 0xA3.toByte(), 0x93.toByte())
+    )
+
+    /** Keepalive envoyé chaque seconde tant que la session propriétaire est active. */
+    val DOMYOS_KEEPALIVE: ByteArray = byteArrayOf(0xF0.toByte(), 0xAC.toByte(), 0x9C.toByte())
 }
