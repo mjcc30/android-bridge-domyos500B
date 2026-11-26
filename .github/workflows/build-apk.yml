@@ -1,13 +1,13 @@
 name: Build APK — Domyos500B Bridge
 
 # À chaque push sur main ou tag v* : build l'APK debug (auto-signé, installable)
-# et le publie en artifact téléchargeable. Sur un tag v*, crée aussi une
-# GitHub Release avec l'APK + un QR code scannable depuis le téléphone.
+# et le publie en artifact téléchargeable. Sur n'importe quel tag, crée aussi
+# une GitHub Release avec l'APK + un QR code scannable depuis le téléphone.
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["*"] # tout tag (v1.0.0, 0.1.0, …) déclenche aussi la release APK + QR
   workflow_dispatch:
 
 permissions:
@@ -66,13 +66,13 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
 
       - name: URL de téléchargement direct (pour le QR code)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/')
         id: url
         run: |
           echo "apk_url=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/app-debug.apk" >> "$GITHUB_OUTPUT"
 
       - name: Générer le QR code vers l'APK
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           curl -sSL -G -o qr-code.png "https://api.qrserver.com/v1/create-qr-code/" \
             --data-urlencode "size=500x500" \
@@ -86,8 +86,8 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 90
 
-      - name: Créer la GitHub Release avec APK + QR code (tags v* uniquement)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Créer la GitHub Release avec APK + QR code (tous les tags)
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
