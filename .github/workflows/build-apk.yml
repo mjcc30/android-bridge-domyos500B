@@ -23,15 +23,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: JDK 17 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Installer le SDK Android (cmdline-tools)
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          cmdline-tools-version: latest
+          # Version longue (build number) requise depuis setup-android v3+ : "latest" n'existe plus.
+          # 15859902 = cmdline-tools 22.0 (version courante).
+          cmdline-tools-version: 15859902
 
       - name: Installer platform-36 + build-tools 36
         run: |
