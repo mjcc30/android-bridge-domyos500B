@@ -1,0 +1,105 @@
+name: Build APK — Domyos500B Bridge
+
+# À chaque push sur main ou tag v* : build l'APK debug (auto-signé, installable)
+# et le publie en artifact téléchargeable. Sur un tag v*, crée aussi une
+# GitHub Release avec l'APK + un QR code scannable depuis le téléphone.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # nécessaire pour créer les releases (softprops/action-gh-release)
+
+jobs:
+  build:
+    name: Build APK (assembleDebug)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Installer le SDK Android (cmdline-tools)
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: latest
+
+      - name: Installer platform-36 + build-tools 36
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Installer Gradle 9.0.0 (officiel)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.0.0
+
+      - name: Générer le wrapper si le jar est absent + rendre gradlew exécutable
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 9.0.0 --distribution-type bin
+          fi
+          sed -i 's/\r$//' gradlew || true
+          chmod +x gradlew
+
+      - name: Compiler l'APK debug
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: URL de téléchargement direct (pour le QR code)
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: url
+        run: |
+          echo "apk_url=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/app-debug.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Générer le QR code vers l'APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          curl -sSL -G -o qr-code.png "https://api.qrserver.com/v1/create-qr-code/" \
+            --data-urlencode "size=500x500" \
+            --data-urlencode "data=${{ steps.url.outputs.apk_url }}"
+          file qr-code.png
+
+      - name: Upload de l'APK en artifact (onglet Actions, rétention 90 jours)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 90
+
+      - name: Créer la GitHub Release avec APK + QR code (tags v* uniquement)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Domyos500B Bridge ${{ github.ref_name }}
+          fail_on_unmatched_files: false
+          body: |
+            ## Installation sur le Pixel 6 Pro (Android 16)
+
+            1. Ouvrir ce lien sur le téléphone (ou scanner le QR code `qr-code.png`) :
+               ${{ steps.url.outputs.apk_url }}
+            2. Autoriser le navigateur à « installer des applications inconnues ».
+            3. Ouvrir l'APK téléchargé → Installer.
+            4. Dans l'app : accepter les permissions Bluetooth/notification,
+               « Batterie sans restriction », puis « Démarrer le bridge ».
+          files: |
+            app/build/outputs/apk/debug/app-debug.apk
+            qr-code.png
