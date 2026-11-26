@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -104,6 +106,7 @@ fun BridgeScreen() {
 
     val uiState by BridgeBus.uiState.collectAsStateWithLifecycle()
     val metrics by BridgeBus.metrics.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
 
     // Auto-scroll de la console vers la trame la plus récente.
     val listState = rememberLazyListState()
@@ -184,6 +187,21 @@ fun BridgeScreen() {
                 }
             ) {
                 Text(if (uiState.serviceRunning) "Arrêter le bridge" else "Démarrer le bridge")
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    // Mise à jour in-app : télécharge l'APK de la release GitHub
+                    // « nightly » (réseau uniquement, aucun impact sur le BLE).
+                    scope.launch { ApkUpdater.downloadAndInstall(context) }
+                }
+            ) {
+                Text("Mise à jour APK")
+            }
+            OutlinedButton(onClick = { LogExporter.share(context) }) {
+                Text("Envoyer les logs")
             }
         }
 

@@ -47,6 +47,9 @@ object BridgeBus {
         uiState.update { it.copy(logs = (it.logs + "$ts  $line").takeLast(MAX_LOGS)) }
     }
 
+    /** Tous les logs retenus (ring buffer de [MAX_LOGS] lignes), pour export fichier. */
+    fun snapshotLogs(): String = uiState.value.logs.joinToString("\n")
+
     fun publish(m: RowerMetrics) {
         metrics.value = MetricsUi(
             watts = m.powerWatts,

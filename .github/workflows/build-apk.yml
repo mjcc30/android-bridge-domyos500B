@@ -7,7 +7,10 @@ name: Build APK — Domyos500B Bridge
 on:
   push:
     branches: [main]
-    tags: ["*"] # tout tag (v1.0.0, 0.1.0, …) déclenche aussi la release APK + QR
+    # Sur main : build + publication dans la release roulante « nightly » (tag créé
+    # par le step release ci-dessous — il ne redéclenche PAS de build car tags = v*).
+    # Sur tag v* : build + release avec QR code.
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -66,13 +69,15 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
 
       - name: URL de téléchargement direct (pour le QR code)
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         id: url
         run: |
-          echo "apk_url=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/app-debug.apk" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then tag="nightly"; else tag="${{ github.ref_name }}"; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "apk_url=https://github.com/${{ github.repository }}/releases/download/$tag/app-debug.apk" >> "$GITHUB_OUTPUT"
 
       - name: Générer le QR code vers l'APK
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         run: |
           curl -sSL -G -o qr-code.png "https://api.qrserver.com/v1/create-qr-code/" \
             --data-urlencode "size=500x500" \
@@ -86,12 +91,13 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 90
 
-      - name: Créer la GitHub Release avec APK + QR code (tous les tags)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publier APK + QR code dans une release (nightly sur main, v* sur tag)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Domyos500B Bridge ${{ github.ref_name }}
+          tag_name: ${{ steps.url.outputs.tag }}
+          name: Domyos500B Bridge ${{ steps.url.outputs.tag }}
+          prerelease: ${{ github.ref == 'refs/heads/main' }}
           fail_on_unmatched_files: false
           body: |
             ## Installation sur le Pixel 6 Pro (Android 16)
