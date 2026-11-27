@@ -41,7 +41,11 @@ in-app fonctionne ; une clé régénérée à chaque build CI la casserait.)
 
 ## Utilisation
 
-1. Allumer le rameur, attendre le **logo BT** sur sa console.
+1. **Ramer un coup d'abord** pour réveiller complètement la console (écran allumé,
+   logo BT). Règle d'or : si le bridge se connecte pendant que le MCU de la console
+   dort encore, la séquence d'init est perdue et l'écran du rameur reste noir même
+   si les données circulent. Le bridge tente de corriger tout seul (reconnexion GATT
+   auto + bouton « Réveiller écran »), mais l'ordre « ramer d'abord » est le fiable.
 2. Dans l'app bridge : « Démarrer le bridge » → attendre les **4 pastilles vertes**
    (`Service`, `Advertising`, `Domyos`, `MyWhoosh` — cette dernière passe au vert
    quand MyWhoosh s'est abonné aux notifications).
