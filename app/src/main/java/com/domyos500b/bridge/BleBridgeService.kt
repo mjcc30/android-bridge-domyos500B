@@ -40,6 +40,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 
@@ -123,6 +125,17 @@ class BleBridgeService : Service() {
     /** Nombre de reconnexions « réveil écran » auto effectuées (limité pour éviter une boucle). */
     @Volatile
     private var autoWakeReconnects = 0
+
+    /** Sérialise l'envoi des trames multi-paquets (évite l'entrelacement keepalive/ticker/réveil). */
+    private val frameMutex = Mutex()
+
+    /** Vrai si une trame RX a été reçue depuis la connexion (un MCU réveillé accuse/échoie : f0 d8/db/dd). */
+    @Volatile
+    private var rxSeenSinceConnect = false
+
+    /** Vrai si aucune trame RX dans les 2,5 s après la connexion : le MCU dormait au connectGatt. */
+    @Volatile
+    private var consoleAsleepAtConnect = false
 
     /** Dernière FC non nulle reçue + son horodatage : on la conserve [HR_HOLD_MS] quand le rameur renvoie 0. */
     private var lastHrValue = 0
@@ -287,6 +300,8 @@ class BleBridgeService : Service() {
         sessionStartMs = 0L
         connectedAtMs = 0L
         autoWakeReconnects = 0
+        rxSeenSinceConnect = false
+        consoleAsleepAtConnect = false
         lastHrValue = 0
         lastHrTimeMs = 0L
         currentResistance = 8
@@ -477,7 +492,20 @@ class BleBridgeService : Service() {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 BridgeBus.setDomyosConnected(true)
                 connectedAtMs = System.currentTimeMillis()
+                rxSeenSinceConnect = false
+                consoleAsleepAtConnect = false
                 BridgeBus.log("Domyos CONNECTÉ (status=$status)")
+                // Sonde « MCU endormi au connectGatt » : un MCU réveillé accuse les trames
+                // (échos f0 d8/db/dd). Aucune trame RX en 2,5 s -> il dormait, l'init est
+                // perdue et l'écran restera noir même si les données circulent ensuite.
+                scope.launch {
+                    delay(2_500)
+                    if (!running || gatt == null) return@launch
+                    if (!rxSeenSinceConnect) {
+                        consoleAsleepAtConnect = true
+                        BridgeBus.log("Aucune trame RX 2,5 s après la connexion : le MCU dormait au connectGatt (init perdue, écran probablement noir).")
+                    }
+                }
                 // Latence minimale sur la liaison rameur (métriques à ~1 Hz mais
                 // keepalive/écran à 1 Hz : on veut le délai le plus court possible).
                 try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) } catch (_: Exception) {}
@@ -563,6 +591,7 @@ class BleBridgeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
+            rxSeenSinceConnect = true
             if (characteristic.uuid == BleConstants.ROWER_DATA) {
                 BridgeBus.log("RX 2AD1 <- ${value.toHex()}")
                 val m = FtmsParser.parse(value)
@@ -604,17 +633,16 @@ class BleBridgeService : Service() {
         val now = System.currentTimeMillis()
         // La console du 500B accepte la connexion BLE pendant que son MCU dort encore :
         // la séquence d'init est alors perdue -> données OK mais écran noir (tactile vivant).
-        // Si la première trame de données n'arrive que bien après la connexion, la console
-        // s'est réveillée entre-temps -> on refait une connexion GATT pour renvoyer l'init
-        // à la console réveillée (au plus 2 fois par démarrage du bridge).
-        if (autoWakeReconnects < 2 && connectedAtMs > 0L && now - connectedAtMs > 3_000L) {
+        // Détecté par l'absence totale de trame RX juste après la connexion. Dès que les
+        // premières données arrivent, on refait une connexion GATT pour renvoyer l'init à la
+        // console réveillée (au plus 2 fois par démarrage du bridge).
+        if (consoleAsleepAtConnect && autoWakeReconnects < 2) {
             autoWakeReconnects++
-            val gap = now - connectedAtMs
             val g = gatt
             scope.launch {
                 delay(1_000)
                 if (!running || gatt == null) return@launch
-                BridgeBus.log("Première trame reçue ${gap} ms après la connexion : la console s'est réveillée APRÈS le connectGatt (init perdue, écran noir) -> reconnexion GATT pour renvoyer l'init à la console réveillée.")
+                BridgeBus.log("Console réveillée APRÈS le connectGatt (init perdue, écran noir) -> reconnexion GATT pour renvoyer l'init à la console réveillée.")
                 try { g?.disconnect() } catch (_: Exception) {}
             }
         }
@@ -717,11 +745,15 @@ class BleBridgeService : Service() {
      * (MTU 23), comme qdomyos-zwift — ex. trames d'affichage de 27 octets (20+7).
      */
     private suspend fun writeDomyosFrame(frame: ByteArray) {
-        var off = 0
-        while (off < frame.size) {
-            val end = minOf(off + 20, frame.size)
-            writeDomyos(frame.copyOfRange(off, end))
-            off = end
+        // Mutex : une trame longue (20+7 octets) ne doit pas être entrelacée avec un
+        // keepalive ou une trame d'un autre émetteur, sinon la trame est corrompue côté MCU.
+        frameMutex.withLock {
+            var off = 0
+            while (off < frame.size) {
+                val end = minOf(off + 20, frame.size)
+                writeDomyos(frame.copyOfRange(off, end))
+                off = end
+            }
         }
     }
 
@@ -779,9 +811,13 @@ class BleBridgeService : Service() {
                 if (displayTestRunning) continue // ne pas écraser les trames marqueurs
                 // La console peut s'être réveillée APRÈS la connexion BLE : les trames
                 // d'init d'affichage (start tape / mode BT) ont alors été perdues et
-                // l'écran reste noir. On les renvoie toutes les 5 s par sécurité.
+                // l'écran reste noir. On renvoie les 3 trames d'affichage toutes les 5 s
+                // et la séquence d'init COMPLÈTE toutes les 20 s, par sécurité.
                 if (tick % 5 == 0) {
                     for (pkt in BleConstants.DOMYOS_DISPLAY_WAKE) writeDomyosFrame(pkt)
+                }
+                if (tick % 20 == 0) {
+                    for (pkt in BleConstants.DOMYOS_INIT) writeDomyosFrame(pkt)
                 }
                 tick++
                 sendDisplayFrames()
