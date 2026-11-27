@@ -221,12 +221,27 @@ fun BridgeScreen() {
                     // Mise à jour in-app : télécharge l'APK de la release GitHub
                     // « nightly » (réseau uniquement, aucun impact sur le BLE).
                     scope.launch { ApkUpdater.downloadAndInstall(context) }
-                }
+                },
+                modifier = Modifier.weight(1f)
             ) {
                 Text("Mise à jour APK")
             }
-            OutlinedButton(onClick = { LogExporter.share(context) }) {
+            OutlinedButton(onClick = { LogExporter.share(context) }, modifier = Modifier.weight(1f)) {
                 Text("Envoyer les logs")
+            }
+            OutlinedButton(
+                onClick = {
+                    // Diagnostic écran : envoie des trames marqueurs vers la console
+                    // du rameur (à photographier pour lire la disposition des champs).
+                    context.startService(
+                        Intent(context, BleBridgeService::class.java)
+                            .setAction(BleBridgeService.ACTION_TEST_DISPLAY)
+                    )
+                },
+                enabled = uiState.serviceRunning && uiState.domyosConnected,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Test écran")
             }
         }
 

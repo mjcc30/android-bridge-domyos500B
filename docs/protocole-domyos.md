@@ -52,12 +52,17 @@ F0 BC 00 1A 41 D6 01 12 00 17 00 04 00 01 01 00 01 00 54 00 13 00 00 00 01 76
 
 ## 2. Commandes envoyées (write) : init + keepalive
 
-Séquence d'init « changyow » à chaque connexion (cf. `btinit_changyow`) :
+Séquence d'init « changyow » COMPLÈTE à chaque connexion (cf. `btinit_changyow`,
+octets copiés tels quels — les 4 longues trames sont écrites en 2 paquets 20+rest) :
 
 ```
-F0 C8 01 B9     # set speed/incline à 0
-F0 C9 B9
-F0 A3 93        # séquence principale
+F0 C8 01 B9                                                  (4 o)  set speed/incline à 0
+F0 C9 B9                                                     (3 o)
+F0 A3 93 / F0 A4 94 / F0 A5 95 / F0 AB 9B / F0 C4 03 B7       (3-4 o) séquence principale
+F0 AD FF×18 01 FF FF 8B                                      (23 o) init résistance + icône BT
+F0 CB 02 00 08 FF×13 01 00 00 01 FF FF FF FF B6               (27 o) mode « affichage piloté par l'app »
+F0 AD FF FF 00 05 FF×7 00 00 FF FF FF 01 FF FF FF 94          (23 o) init résistance 2
+F0 CB FF×13 01 00 14 01 FF×8 BD                              (27 o) « start tape »
 ```
 
 Keepalive à **1 Hz** tant que la session est active (sinon le rameur coupe) :
@@ -126,6 +131,14 @@ Exemple émis par le pont (3 s, 9 km/h, FC 0, 27 spm, 4 kcal) :
 F0 CB 03 00 03 FF 01 00 09 02 01 00 00 00 01 00 1B 01 01 00   (20 octets)
 04 01 FF FF FF FF EC                                            (7 octets, EC = checksum)
 ```
+
+> **Note 500B (constaté sur machine réelle)** : la disposition effectivement utilisée
+> par le firmware de la console 500B semble différer de celle du changyow de
+> qdomyos-zwift : sur photos, le champ **Km** semblait piloté par les octets 19-20
+> (unité 0,01 km — il affichait la valeur des kcal envoyée en 19-20) et le champ
+> **Kcal** par les octets 13-14 (toujours 0 car le pont les laissait à 0), tandis que
+> le temps (3-4) correspondait bien. Le bouton **« Test écran »** de l'app envoie des
+> trames marqueurs (octet i = 10+i) pour confirmer ce mapping octet par octet.
 
 ## 4. Autres commandes
 

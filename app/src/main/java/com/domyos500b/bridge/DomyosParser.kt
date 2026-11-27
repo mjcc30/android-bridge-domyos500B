@@ -105,6 +105,34 @@ object DomyosParser {
         return f
     }
 
+    // ------------------------------------------------------------------
+    // Diagnostic : trames « marqueurs ». Chaque octet de données reçoit une
+    // valeur distincte (10 + index) pour identifier empiriquement — via une
+    // photo de la console du 500B — quel octet pilote quel champ de l'écran.
+    // (Sur le firmware du 500B, la disposition constatée ne correspond pas
+    // exactement à celle du changyow de qdomyos : la distance semblerait lue
+    // en octets 19-20 et les kcal en 13-14.)
+    // ------------------------------------------------------------------
+
+    /** Trame `f0 cb` marqueur : octet i = 10+i pour i in 3..25 (sauf 5,6 structurels). */
+    fun buildMarkerDisplayFrame(): ByteArray {
+        val f = buildDisplayFrame(0, 0, 0, 0, 0)
+        for (i in 3..25) {
+            if (i == 5 || i == 6) continue
+            f[i] = (10 + i).toByte()
+        }
+        f[26] = checksum(f)
+        return f
+    }
+
+    /** Trame `f0 cd` marqueur : octet i = 10+i pour i in 3..25. */
+    fun buildMarkerDistanceFrame(): ByteArray {
+        val f = buildDistanceDisplayFrame(0)
+        for (i in 3..25) f[i] = (10 + i).toByte()
+        f[26] = checksum(f)
+        return f
+    }
+
     /** Dernier octet = somme des octets précédents & 0xFF. */
     private fun checksum(frame: ByteArray): Byte {
         var sum = 0

@@ -83,8 +83,8 @@ object BleConstants {
         hexBytes("F0 C4 03 B7"),
         hexBytes("F0 AD FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 01 FF FF FF 8B"), // 23 o
         hexBytes("F0 CB 02 00 08 FF FF FF FF FF FF FF FF FF FF FF FF FF 01 00 00 01 FF FF FF FF B6"), // 27 o, mode BT
-        hexBytes("F0 AD FF FF 00 05 FF FF FF FF FF FF FF FF 00 00 FF FF FF 01 FF FF FF 94"), // 24 o
-        hexBytes("F0 CB FF FF FF FF FF FF FF FF FF FF FF FF FF FF 01 00 14 01 FF FF FF FF FF FF FF BD") // 28 o, start tape
+        hexBytes("F0 AD FF FF 00 05 FF FF FF FF FF FF FF 00 00 FF FF FF 01 FF FF FF 94"), // 23 o
+        hexBytes("F0 CB FF FF FF FF FF FF FF FF FF FF FF FF 01 00 14 01 FF FF FF FF FF FF FF FF BD") // 27 o, start tape
     )
 
     /** Keepalive envoyé chaque seconde tant que la session propriétaire est active. */

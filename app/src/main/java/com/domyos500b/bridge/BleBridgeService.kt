@@ -23,7 +23,6 @@ import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Intent
@@ -71,6 +70,7 @@ class BleBridgeService : Service() {
         const val ACTION_STOP = "com.domyos500b.bridge.ACTION_STOP"
         const val ACTION_SET_RESISTANCE = "com.domyos500b.bridge.ACTION_SET_RESISTANCE"
         const val EXTRA_RESISTANCE_LEVEL = "resistance_level"
+        const val ACTION_TEST_DISPLAY = "com.domyos500b.bridge.ACTION_TEST_DISPLAY"
         private const val NOTIFY_PERIOD_MS = 250L   // 4 Hz
         private const val RECONNECT_DELAY_MS = 2_000L
         private const val MTU_REQUEST = 247
@@ -133,6 +133,17 @@ class BleBridgeService : Service() {
     /** Caractéristique d'écriture du protocole propriétaire (quand actif). */
     private var domyosWriteChar: BluetoothGattCharacteristic? = null
 
+    /** Connexion directe à la ceinture cardiaque (0x180D) — source FC de secours. */
+    private var hrGatt: BluetoothGatt? = null
+
+    /** Dernière FC lue directement sur la ceinture + horodatage. */
+    private var strapHr = 0
+    private var strapHrTimeMs = 0L
+
+    /** Vrai pendant l'envoi des trames « marqueurs » de test d'écran (suspend le ticker). */
+    @Volatile
+    private var displayTestRunning = false
+
     /** Continuation de l'opération GATT en cours (la file garantit l'unicité). */
     private var pending: Continuation<Boolean>? = null
 
@@ -156,6 +167,10 @@ class BleBridgeService : Service() {
         if (intent?.action == ACTION_SET_RESISTANCE) {
             val level = intent.getIntExtra(EXTRA_RESISTANCE_LEVEL, currentResistance)
             scope.launch { setRowerResistance(level) }
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_TEST_DISPLAY) {
+            scope.launch { sendDisplayTest() }
             return START_STICKY
         }
 
@@ -226,6 +241,12 @@ class BleBridgeService : Service() {
         try { gatt?.disconnect() } catch (_: Exception) {}
         try { gatt?.close() } catch (_: Exception) {}
         gatt = null
+        try { hrGatt?.disconnect() } catch (_: Exception) {}
+        try { hrGatt?.close() } catch (_: Exception) {}
+        hrGatt = null
+        strapHr = 0
+        strapHrTimeMs = 0L
+        displayTestRunning = false
         try { gattServer?.close() } catch (_: Exception) {}
         gattServer = null
         subscribers.clear()
@@ -286,34 +307,57 @@ class BleBridgeService : Service() {
             return
         }
         scanner = btAdapter.bluetoothLeScanner ?: return
-        val filters = listOf(
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(BleConstants.FTMS_SERVICE)).build(),
-            ScanFilter.Builder().setServiceUuid(ParcelUuid(BleConstants.DOMYOS_SERVICE)).build()
-        )
+        // Scan SANS filtre : certains firmwares ne mettent pas l'UUID du service dans
+        // le paquet d'advertising principal (seulement en scan response), un filtre
+        // UUID les fait rater et allonge la découverte. La classification se fait dans
+        // le callback (rameur = 0x1826 ou 49535343-… ou nom Domyos/ROW ; ceinture =
+        // service 0x180D seul).
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .build()
         try {
-            scanner?.startScan(filters, settings, scanCallback)
-            BridgeBus.log("Scan BLE démarré (services 0x1826 + 49535343-…)")
+            scanner?.startScan(null, settings, scanCallback)
+            BridgeBus.log("Scan BLE démarré (sans filtre, LOW_LATENCY, classification dans le callback)")
         } catch (se: SecurityException) {
             BridgeBus.log("Scan refusé: ${se.message}")
+        }
+        // Watchdog : si aucun périphérique n'est vu, certains chipsets cessent de
+        // délivrer les résultats -> on redémarre le scan périodiquement.
+        scope.launch {
+            while (running) {
+                delay(20_000)
+                if (!running) break
+                if (gatt == null || hrGatt == null) {
+                    BridgeBus.log("Watchdog scan: redémarrage du scan (rower=${gatt != null}, ceinture=${hrGatt != null})")
+                    try { scanner?.stopScan(scanCallback) } catch (_: Exception) {}
+                    try { scanner?.startScan(null, settings, scanCallback) } catch (_: Exception) {}
+                } else {
+                    // Les deux périphériques sont connectés : le scan ne sert plus à rien.
+                    try { scanner?.stopScan(scanCallback) } catch (_: Exception) {}
+                }
+            }
         }
     }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            if (gatt != null) return // déjà connecté / connexion en cours
             val device = result.device
+            val uuids = result.scanRecord?.serviceUuids?.map { it.uuid } ?: emptyList()
             val name = try { device.name } catch (_: SecurityException) { null }
-            if (name != null && !name.contains("Domyos", ignoreCase = true) &&
-                result.scanRecord?.serviceUuids?.none {
-                    it.uuid == BleConstants.FTMS_SERVICE || it.uuid == BleConstants.DOMYOS_SERVICE
-                } == true
-            ) return
-            BridgeBus.log("Scan: ${name ?: "?"} ${device.address} RSSI=${result.rssi}")
-            connectToRower(device)
+            val isRower = uuids.contains(BleConstants.DOMYOS_SERVICE) ||
+                uuids.contains(BleConstants.FTMS_SERVICE) ||
+                (name != null && (name.contains("Domyos", ignoreCase = true) ||
+                    name.startsWith("ROW", ignoreCase = true) ||
+                    name.startsWith("RW", ignoreCase = true)))
+            val isHrStrap = !isRower && uuids.contains(BleConstants.HEART_RATE_SERVICE)
+            if (isRower && gatt == null) {
+                BridgeBus.log("Scan: RAMEUR ${name ?: "?"} ${device.address} RSSI=${result.rssi}")
+                connectToRower(device)
+            } else if (isHrStrap && hrGatt == null) {
+                BridgeBus.log("Scan: CEINTURE HR ${name ?: "?"} ${device.address} RSSI=${result.rssi}")
+                connectHrStrap(device)
+            }
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -322,12 +366,78 @@ class BleBridgeService : Service() {
     }
 
     private fun connectToRower(device: BluetoothDevice) {
-        try { scanner?.stopScan(scanCallback) } catch (_: Exception) {}
-        BridgeBus.log("Connexion GATT -> ${device.address} (TRANSPORT_LE)")
+        BridgeBus.log("Connexion GATT -> rameur ${device.address} (TRANSPORT_LE)")
         try {
             gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } catch (se: SecurityException) {
             BridgeBus.log("connectGatt refusé: ${se.message}")
+        }
+    }
+
+    /** Connexion directe à la ceinture cardiaque (0x180D/2A37) pour une FC plus rapide. */
+    private fun connectHrStrap(device: BluetoothDevice) {
+        BridgeBus.log("Connexion GATT -> ceinture HR ${device.address} (TRANSPORT_LE)")
+        try {
+            hrGatt = device.connectGatt(this, false, hrGattCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (se: SecurityException) {
+            BridgeBus.log("connectGatt (ceinture) refusé: ${se.message}")
+        }
+    }
+
+    private val hrGattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                BridgeBus.log("Ceinture HR CONNECTÉE (status=$status) -> discovery services")
+                g.discoverServices()
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                BridgeBus.log("Ceinture HR DÉCONNECTÉE (status=$status) -> rescan dans ${RECONNECT_DELAY_MS} ms")
+                try { g.close() } catch (_: Exception) {}
+                if (hrGatt === g) hrGatt = null
+                strapHr = 0
+                strapHrTimeMs = 0L
+                scope.launch {
+                    delay(RECONNECT_DELAY_MS)
+                    if (running) startScan()
+                }
+            }
+        }
+
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            val hrChar = g.services
+                ?.firstOrNull { it.uuid == BleConstants.HEART_RATE_SERVICE }
+                ?.getCharacteristic(BleConstants.HEART_RATE_MEASUREMENT)
+            if (hrChar == null) {
+                BridgeBus.log("Ceinture HR: service 0x180D/0x2A37 introuvable (status=$status)")
+                return
+            }
+            g.setCharacteristicNotification(hrChar, true)
+            val cccd = hrChar.getDescriptor(BleConstants.CCCD)
+            if (cccd != null) {
+                // Fire-and-forget : on n'attend pas la réponse pour ne pas polluer la
+                // GattCommandQueue du rameur (continuation `pending` partagée sinon).
+                val rc = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                BridgeBus.log("Ceinture HR: CCCD 0x2A37 écrit (rc=$rc)")
+            }
+            BridgeBus.log("Ceinture HR: notifications 0x2A37 armées")
+        }
+
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            if (characteristic.uuid != BleConstants.HEART_RATE_MEASUREMENT || value.size < 2) return
+            val flags = value[0].toInt() and 0xFF
+            val bpm = if (flags and 0x01 == 0) {
+                value[1].toInt() and 0xFF
+            } else {
+                (((value[2].toInt() and 0xFF) shl 8) or (value[1].toInt() and 0xFF)).coerceIn(0, 255)
+            }
+            if (bpm > 0) {
+                strapHr = bpm
+                strapHrTimeMs = System.currentTimeMillis()
+                BridgeBus.log("RX HR ceinture <- $bpm bpm (${value.toHex()})")
+            }
         }
     }
 
@@ -337,12 +447,17 @@ class BleBridgeService : Service() {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 BridgeBus.setDomyosConnected(true)
                 BridgeBus.log("Domyos CONNECTÉ (status=$status)")
+                // Latence minimale sur la liaison rameur (métriques à ~1 Hz mais
+                // keepalive/écran à 1 Hz : on veut le délai le plus court possible).
+                try { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) } catch (_: Exception) {}
                 // Workaround : certains chipsets suspendent l'advertising peripheral tant
-                // qu'une connexion centrale est active -> on le redémarre à chaque connexion.
+                // qu'une connexion centrale est active -> on le redémarre à chaque connexion,
+                // en BALANCED (le LOW_LATENCY est sacrifié dès qu'on est central).
                 try { advertiser?.stopAdvertising(advertiseCallback) } catch (_: Exception) {}
-                startAdvertising()
+                startAdvertising(lowLatency = false)
                 scope.launch {
                     try {
+                        delay(500) // laisse le requestConnectionPriority s'appliquer
                         queue.enqueue { awaitOp("requestMtu") { g.requestMtu(MTU_REQUEST) } }
                         val discovered = queue.enqueue { awaitOp("discoverServices") { g.discoverServices() } }
                         if (!discovered) throw Exception("découverte des services échouée")
@@ -363,6 +478,10 @@ class BleBridgeService : Service() {
                 resumePending(false)
                 try { g.close() } catch (_: Exception) {}
                 if (gatt === g) gatt = null
+                // Rameur parti : on repasse l'advertising en LOW_LATENCY pour que
+                // MyWhoosh retrouve le pont au plus vite.
+                try { advertiser?.stopAdvertising(advertiseCallback) } catch (_: Exception) {}
+                startAdvertising(lowLatency = true)
                 scope.launch {
                     delay(RECONNECT_DELAY_MS)
                     if (running) startScan()
@@ -434,13 +553,20 @@ class BleBridgeService : Service() {
         lastStrokeCount = m.strokeCount
         if (m.paceSecPer500m > 0) integratedDistanceM += (500.0 / m.paceSecPer500m) * dt
         if (sessionStartMs == 0L && (m.strokeCount > 0 || m.strokeRateSpm > 0.0)) sessionStartMs = now
-        // Hold FC : quand le rameur renvoie 0 (ceinture perdue ou pause), on conserve
-        // la dernière valeur connue pendant HR_HOLD_MS avant d'afficher 0.
+        // Hold FC : quand le rameur renvoie 0 (ceinture pas encore appairée par la
+        // console, ou pause), on prend la FC lue directement sur la ceinture si elle
+        // est fraîche, sinon on conserve la dernière valeur connue pendant HR_HOLD_MS.
+        val strapFresh = strapHr > 0 && now - strapHrTimeMs <= 8_000
         val hrEff = when {
             m.heartRateBpm > 0 -> {
                 lastHrValue = m.heartRateBpm
                 lastHrTimeMs = now
                 m.heartRateBpm
+            }
+            strapFresh -> {
+                lastHrValue = strapHr
+                lastHrTimeMs = now
+                strapHr
             }
             lastHrValue > 0 && now - lastHrTimeMs <= HR_HOLD_MS -> lastHrValue
             else -> 0
@@ -505,6 +631,7 @@ class BleBridgeService : Service() {
         }
         proprietaryActive = true
         startKeepalive()
+        sendDisplayFrames() // première trame tout de suite, sans attendre 1 s
         startDisplayTicker()
         BridgeBus.log("Session Domyos propriétaire active (init complète ${BleConstants.DOMYOS_INIT.size} trames, keepalive 1 Hz, écran 1 Hz)")
     }
@@ -571,22 +698,53 @@ class BleBridgeService : Service() {
             while (running && proprietaryActive) {
                 delay(1_000)
                 if (!proprietaryActive) break
-                val m = latestRawMetrics ?: continue
-                val elapsedSec =
-                    if (sessionStartMs > 0L) ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
-                    else 0
-                val speedKmh = if (m.paceSecPer500m > 0) 1800 / m.paceSecPer500m else 0
-                val frames = listOf(
-                    DomyosParser.buildDistanceDisplayFrame(m.distanceMeters),
-                    DomyosParser.buildDisplayFrame(
-                        elapsedSec, speedKmh, m.heartRateBpm,
-                        m.strokeRateSpm.roundToInt(), m.caloriesKcal
-                    )
-                )
-                for (frame in frames) {
-                    writeDomyosFrame(frame)
-                }
+                if (displayTestRunning) continue // ne pas écraser les trames marqueurs
+                sendDisplayFrames()
             }
+        }
+    }
+
+    /** Envoie une paire de trames d'affichage (f0 cd distance + f0 cb temps/vitesse/FC/cadence/kcal). */
+    private suspend fun sendDisplayFrames() {
+        val m = latestRawMetrics ?: return
+        val elapsedSec =
+            if (sessionStartMs > 0L) ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
+            else 0
+        val speedKmh = if (m.paceSecPer500m > 0) 1800 / m.paceSecPer500m else 0
+        val frames = listOf(
+            DomyosParser.buildDistanceDisplayFrame(m.distanceMeters),
+            DomyosParser.buildDisplayFrame(
+                elapsedSec, speedKmh, m.heartRateBpm,
+                m.strokeRateSpm.roundToInt(), m.caloriesKcal
+            )
+        )
+        for (frame in frames) {
+            writeDomyosFrame(frame)
+        }
+    }
+
+    /**
+     * Test d'écran (diagnostic) : envoie des trames « marqueurs » où chaque octet a une
+     * valeur distincte, pour lire sur une photo de la console quels octets pilotent
+     * quels champs. Envoie aussi une trame de résistance niveau 10. ~6 s.
+     */
+    private suspend fun sendDisplayTest() {
+        if (domyosWriteChar == null) {
+            BridgeBus.log("TEST ÉCRAN: rameur non connecté -> abandon")
+            return
+        }
+        displayTestRunning = true
+        try {
+            BridgeBus.log("TEST ÉCRAN: trames marqueurs f0 cb / f0 cd + résistance 10 (photographiez la console)")
+            writeDomyosFrame(DomyosParser.buildResistanceFrame(10))
+            repeat(15) {
+                writeDomyosFrame(DomyosParser.buildMarkerDistanceFrame())
+                writeDomyosFrame(DomyosParser.buildMarkerDisplayFrame())
+                delay(400)
+            }
+            BridgeBus.log("TEST ÉCRAN: terminé")
+        } finally {
+            displayTestRunning = false
         }
     }
 
@@ -871,7 +1029,10 @@ class BleBridgeService : Service() {
         BridgeBus.setMyWhooshConnected(subscribers.isNotEmpty())
     }
 
-    private fun startAdvertising() {
+    private var advertisingLowLatency = true
+
+    private fun startAdvertising(lowLatency: Boolean = true) {
+        advertisingLowLatency = lowLatency
         val btAdapter = adapter ?: return
         if (!btAdapter.isEnabled) return
         try {
@@ -884,10 +1045,14 @@ class BleBridgeService : Service() {
             return
         }
         val settings = AdvertiseSettings.Builder()
-            // BALANCED (250 ms) : plus robuste qu'en LOW_LATENCY quand le téléphone est
-            // simultanément connecté comme central au rameur (certains chipsets
-            // sacrifient l'advertising LOW_LATENCY dès qu'une connexion est active).
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+            // LOW_LATENCY (100 ms) tant que le téléphone n'est pas central : MyWhoosh
+            // trouve le pont plus vite. BALANCED (250 ms) une fois connecté au rameur :
+            // certains chipsets sacrifient l'advertising LOW_LATENCY dès qu'une
+            // connexion centrale est active.
+            .setAdvertiseMode(
+                if (lowLatency) AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
+                else AdvertiseSettings.ADVERTISE_MODE_BALANCED
+            )
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .setTimeout(0) // illimité
@@ -914,7 +1079,7 @@ class BleBridgeService : Service() {
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
             BridgeBus.setAdvertising(true)
-            BridgeBus.log("Advertising démarré: \"${BleConstants.DEVICE_NAME}\" (service 0x1826, nom dans adv, BALANCED / TX_HIGH)")
+            BridgeBus.log("Advertising démarré: \"${BleConstants.DEVICE_NAME}\" (service 0x1826, nom dans adv, TX_HIGH, mode=${if (advertisingLowLatency) "LOW_LATENCY" else "BALANCED"})")
         }
 
         override fun onStartFailure(errorCode: Int) {

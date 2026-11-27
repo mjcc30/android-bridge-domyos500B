@@ -57,11 +57,13 @@ Bouton **« Envoyer les logs »** : partage la console interne (trames hex TX/RX
 
 ## Ce que fait le pont
 
-- **Côté rameur (GATT client)** : scan des services `0x1826` et `49535343-…`, connexion
-  `TRANSPORT_LE`, MTU 247 demandé. Si le rameur n'expose pas FTMS (cas du 500B) :
-  protocole propriétaire — init `f0 c8 01 b9` / `f0 c9 b9` / `f0 a3 93`, keepalive
-  `f0 ac 9c` à 1 Hz, réception des paquets `f0 bc …` (26 octets, voir
-  [docs/protocole-domyos.md](docs/protocole-domyos.md)).
+- **Côté rameur (GATT client)** : scan BLE **sans filtre** (classification dans le
+  callback : rameur = `0x1826` ou `49535343-…` ou nom Domyos/ROW ; ceinture cardiaque =
+  `0x180D` seul), watchdog qui redémarre le scan toutes les 20 s, connexion
+  `TRANSPORT_LE` + `CONNECTION_PRIORITY_HIGH`, MTU 247 demandé. Si le rameur n'expose
+  pas FTMS (cas du 500B) : protocole propriétaire — init « changyow » complète
+  (11 trames), keepalive `f0 ac 9c` à 1 Hz, réception des paquets `f0 bc …`
+  (26 octets, voir [docs/protocole-domyos.md](docs/protocole-domyos.md)).
 - **Métriques** : spm, coups, pace, distance, FC parsés ; la **puissance est recalculée**
   depuis le pace (formule Concept2 `W = 2.80 / (pace/500)^3`) car le 500B ne l'envoie pas.
 - **Distance intégrée localement** : le compteur distance du Domyos progresse trop
@@ -79,8 +81,18 @@ Bouton **« Envoyer les logs »** : partage la console interne (trames hex TX/RX
   l'app » et `f0 cb ff …` « start tape »), puis à 1 Hz le pont renvoie au 500B ses
   propres métriques via les trames d'affichage `f0 cd` (distance) et `f0 cb` (temps,
   vitesse, FC, cadence, kcal), comme Kinomap / qdomyos-zwift.
-- **FC** : quand le rameur renvoie 0 (ceinture perdue ou pause), la dernière valeur
-  connue est conservée 30 s avant d'afficher 0 (évite le « 0 bpm » dans MyWhoosh).
+- **FC** : lue sur le rameur (octet 18 des `f0 bc`) **et directement sur la ceinture**
+  (connexion 0x180D/2A37 dédiée) — la FC arrive donc dans MyWhoosh même tant que la
+  console n'a pas encore appairé la ceinture. Quand tout renvoie 0 (pause), la
+  dernière valeur connue est conservée 30 s avant d'afficher 0 (évite le « 0 bpm »).
+- **Advertising** : `LOW_LATENCY` (100 ms) tant que le téléphone n'est pas connecté au
+  rameur (MyWhoosh trouve « PM5 » plus vite), puis `BALANCED` une fois central connecté
+  (certains chipsets sacrifient le LOW_LATENCY à ce moment-là).
+- **Diagnostic écran** : le bouton **« Test écran »** envoie des trames « marqueurs »
+  (`f0 cb` / `f0 cd` avec une valeur distincte par octet + résistance 10) pendant ~6 s :
+  une photo de la console permet de lire quel octet pilote quel champ (utile car le
+  firmware du 500B ne semble pas disposer les champs exactement comme le changyow de
+  qdomyos-zwift — voir docs/protocole-domyos.md §3).
 - **Résistance** : réglable depuis l'app (boutons « Résistance −/+ », trame `f0 ad …`
   niveau 1-15) et relayée depuis MyWhoosh via le Control Point FTMS opcode 0x04
   (Set Target Resistance). Le niveau lu (octet 14 des paquets `f0 bc`) est affiché.
@@ -119,6 +131,7 @@ release versionnée avec QR code.
 | « App not installed » à la mise à jour | Signature différente (vieille install) | Désinstaller + réinstaller via le QR nightly |
 | Le bateau n'avance pas dans MyWhoosh | Distance 2AD1 à 0 | Corrigé (distance intégrée) — mettre à jour le nightly |
 | L'écran du rameur n'affiche rien | Trames `f0 cb`/`f0 cd` absentes des logs | Mettre à jour le nightly (fonctionnalité récente) |
+| L'écran du rameur affiche 0 / des valeurs fausses | Mauvaise disposition des champs (firmware 500B ≠ changyow qdomyos) | Bouton « Test écran » + photo de la console -> mapping en cours |
 | MyWhoosh HD (Windows) ne voit pas PM5 | Scan passif sans nom, ou autre appli BLE ouverte | Le nom est dans le paquet principal ; fermer Bluetooth LE Explorer |
 
 ## Limitations connues
@@ -130,6 +143,10 @@ release versionnée avec QR code.
   BLE propriétaire).
 - La distance envoyée à MyWhoosh est l'intégration locale (plus fidèle que le compteur
   du rameur) ; l'écran du rameur, lui, reçoit la valeur brute du rameur.
+- La disposition des champs d'affichage `f0 cb` du 500B est **en cours de
+  reverse-engineering** (bouton « Test écran » + photo) : sur les photos réelles, la
+  distance (Km) semblait lue aux octets 19-20 et les kcal aux octets 13-14, soit
+  l'inverse de qdomyos-zwift.
 
 ## Protocole
 

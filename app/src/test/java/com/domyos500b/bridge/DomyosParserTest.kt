@@ -143,16 +143,52 @@ class DomyosParserTest {
 
     @Test
     fun initSequenceFramesAreWellFormed() {
-        // séquence changyow complète (qdomyos-zwift btinit_changyow), 11 trames
+        // séquence changyow complète (qdomyos-zwift btinit_changyow), 11 trames,
+        // octets identiques au code C d'origine (initDataStart6..13 concaténés)
         assertEquals(11, BleConstants.DOMYOS_INIT.size)
-        for (f in BleConstants.DOMYOS_INIT) {
+        val expectedSizes = listOf(4, 3, 3, 3, 3, 3, 4, 23, 27, 23, 27)
+        for ((i, f) in BleConstants.DOMYOS_INIT.withIndex()) {
             assertEquals(0xF0.toByte(), f[0])
-            assertTrue(f.size >= 3)
+            assertEquals("trame $i", expectedSizes[i], f.size)
         }
-        assertEquals(23, BleConstants.DOMYOS_INIT[7].size)  // f0 ad init
-        assertEquals(27, BleConstants.DOMYOS_INIT[8].size)  // f0 cb 02 … mode BT
-        assertEquals(24, BleConstants.DOMYOS_INIT[9].size)  // f0 ad init 2
-        assertEquals(28, BleConstants.DOMYOS_INIT[10].size) // f0 cb ff … start tape
+        // les 4 longues trames ont un checksum valide (dernier octet = somme & 0xFF)
+        for (i in listOf(7, 8, 9, 10)) {
+            val f = BleConstants.DOMYOS_INIT[i]
+            var sum = 0
+            for (b in 0 until f.size - 1) sum += f[b].toInt() and 0xFF
+            assertEquals("checksum trame $i", (sum and 0xFF).toByte(), f[f.size - 1])
+        }
+        // octets exacts des deux trames longues recopiées du C (initDataStart10+11, 12+13)
+        assertArrayEquals(
+            hex("F0 AD FF FF 00 05 FF FF FF FF FF FF FF 00 00 FF FF FF 01 FF FF FF 94"),
+            BleConstants.DOMYOS_INIT[9]
+        )
+        assertArrayEquals(
+            hex("F0 CB FF FF FF FF FF FF FF FF FF FF FF FF 01 00 14 01 FF FF FF FF FF FF FF FF BD"),
+            BleConstants.DOMYOS_INIT[10]
+        )
+    }
+
+    @Test
+    fun markerFramesHaveDistinctByteValuesAndValidChecksum() {
+        val cb = DomyosParser.buildMarkerDisplayFrame()
+        val cd = DomyosParser.buildMarkerDistanceFrame()
+        assertEquals(27, cb.size)
+        assertEquals(27, cd.size)
+        assertEquals(0xF0.toByte(), cb[0])
+        assertEquals(0xCB.toByte(), cb[1])
+        assertEquals(0xF0.toByte(), cd[0])
+        assertEquals(0xCD.toByte(), cd[1])
+        for (i in 3..25) {
+            if (i == 5 || i == 6) continue // structurels dans f0 cb
+            assertEquals("cb[$i]", (10 + i).toByte(), cb[i])
+            assertEquals("cd[$i]", (10 + i).toByte(), cd[i])
+        }
+        for (f in listOf(cb, cd)) {
+            var sum = 0
+            for (i in 0 until 26) sum += f[i].toInt() and 0xFF
+            assertEquals((sum and 0xFF).toByte(), f[26])
+        }
     }
 
     @Test
