@@ -71,6 +71,7 @@ class BleBridgeService : Service() {
         const val ACTION_SET_RESISTANCE = "com.domyos500b.bridge.ACTION_SET_RESISTANCE"
         const val EXTRA_RESISTANCE_LEVEL = "resistance_level"
         const val ACTION_TEST_DISPLAY = "com.domyos500b.bridge.ACTION_TEST_DISPLAY"
+        const val ACTION_WAKE_DISPLAY = "com.domyos500b.bridge.ACTION_WAKE_DISPLAY"
         private const val NOTIFY_PERIOD_MS = 250L   // 4 Hz
         private const val RECONNECT_DELAY_MS = 2_000L
         private const val MTU_REQUEST = 247
@@ -175,6 +176,10 @@ class BleBridgeService : Service() {
         }
         if (intent?.action == ACTION_TEST_DISPLAY) {
             scope.launch { sendDisplayTest() }
+            return START_STICKY
+        }
+        if (intent?.action == ACTION_WAKE_DISPLAY) {
+            scope.launch { wakeDisplay() }
             return START_STICKY
         }
 
@@ -746,13 +751,40 @@ class BleBridgeService : Service() {
      */
     private fun startDisplayTicker() {
         scope.launch {
+            var tick = 0
             while (running && proprietaryActive) {
                 delay(1_000)
                 if (!proprietaryActive) break
                 if (displayTestRunning) continue // ne pas écraser les trames marqueurs
+                // La console peut s'être réveillée APRÈS la connexion BLE : les trames
+                // d'init d'affichage (start tape / mode BT) ont alors été perdues et
+                // l'écran reste noir. On les renvoie toutes les 5 s par sécurité.
+                if (tick % 5 == 0) {
+                    for (pkt in BleConstants.DOMYOS_DISPLAY_WAKE) writeDomyosFrame(pkt)
+                }
+                tick++
                 sendDisplayFrames()
             }
         }
+    }
+
+    /**
+     * « Réveiller écran » (bouton UI) : renvoie plusieurs fois les trames d'init
+     * d'affichage + les trames d'affichage courantes, pour rallumer la console du
+     * 500B quand elle s'est réveillée après la connexion (écran noir, tactile vivant).
+     */
+    private suspend fun wakeDisplay() {
+        if (domyosWriteChar == null) {
+            BridgeBus.log("RÉVEIL ÉCRAN: rameur non connecté -> abandon")
+            return
+        }
+        BridgeBus.log("RÉVEIL ÉCRAN: renvoi start tape + mode BT + trames d'affichage x10")
+        repeat(10) {
+            for (pkt in BleConstants.DOMYOS_DISPLAY_WAKE) writeDomyosFrame(pkt)
+            sendDisplayFrames()
+            delay(300)
+        }
+        BridgeBus.log("RÉVEIL ÉCRAN: terminé")
     }
 
     /**

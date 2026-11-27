@@ -192,6 +192,17 @@ fun BridgeScreen() {
                 onClick = { sendResistance(context, uiState.resistanceLevel, +1) },
                 enabled = uiState.serviceRunning && uiState.domyosConnected
             ) { Text("Résistance +") }
+            OutlinedButton(
+                onClick = {
+                    // Écran de la console noir mais tactile vivant (réveil après la
+                    // connexion BLE) : on renvoie les trames d'init d'affichage.
+                    context.startService(
+                        Intent(context, BleBridgeService::class.java)
+                            .setAction(BleBridgeService.ACTION_WAKE_DISPLAY)
+                    )
+                },
+                enabled = uiState.serviceRunning && uiState.domyosConnected
+            ) { Text("Réveiller écran") }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

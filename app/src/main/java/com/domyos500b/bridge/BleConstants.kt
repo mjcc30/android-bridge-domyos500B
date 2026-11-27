@@ -87,6 +87,17 @@ object BleConstants {
         hexBytes("F0 CB FF FF FF FF FF FF FF FF FF FF FF FF 01 00 14 01 FF FF FF FF FF FF FF FF BD") // 27 o, start tape
     )
 
+    /**
+     * Trames d'init d'affichage renvoyées périodiquement (toutes les 5 s) et à la
+     * demande (bouton « Réveiller écran ») : [0] = `f0 c8 01 b9` « start tape »,
+     * [8] = `f0 cb 02 …` mode BT « affichage piloté par l'app », [10] = `f0 cb ff …`
+     * « start tape » de l'afficheur. Si la console s'est réveillée APRÈS la connexion
+     * BLE (le module BLE acceptait déjà la connexion pendant que le MCU dormait),
+     * ces trames ont été perdues -> les données circulent mais l'écran du 500B
+     * reste noir (le tactile répond, l'afficheur non).
+     */
+    val DOMYOS_DISPLAY_WAKE: List<ByteArray> = listOf(DOMYOS_INIT[0], DOMYOS_INIT[8], DOMYOS_INIT[10])
+
     /** Keepalive envoyé chaque seconde tant que la session propriétaire est active. */
     val DOMYOS_KEEPALIVE: ByteArray = byteArrayOf(0xF0.toByte(), 0xAC.toByte(), 0x9C.toByte())
 
