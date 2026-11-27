@@ -195,7 +195,8 @@ fun BridgeScreen() {
             OutlinedButton(
                 onClick = {
                     // Écran de la console noir mais tactile vivant (réveil après la
-                    // connexion BLE) : on renvoie les trames d'init d'affichage.
+                    // connexion BLE) : on rejoue l'init complet puis on force une
+                    // reconnexion GATT (l'init envoyée console endormie est perdue).
                     context.startService(
                         Intent(context, BleBridgeService::class.java)
                             .setAction(BleBridgeService.ACTION_WAKE_DISPLAY)

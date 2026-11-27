@@ -120,6 +120,10 @@ class BleBridgeService : Service() {
     @Volatile
     private var connectedAtMs = 0L
 
+    /** Nombre de reconnexions « réveil écran » auto effectuées (limité pour éviter une boucle). */
+    @Volatile
+    private var autoWakeReconnects = 0
+
     /** Dernière FC non nulle reçue + son horodatage : on la conserve [HR_HOLD_MS] quand le rameur renvoie 0. */
     private var lastHrValue = 0
     private var lastHrTimeMs = 0L
@@ -282,6 +286,7 @@ class BleBridgeService : Service() {
         latestRawMetrics = null
         sessionStartMs = 0L
         connectedAtMs = 0L
+        autoWakeReconnects = 0
         lastHrValue = 0
         lastHrTimeMs = 0L
         currentResistance = 8
@@ -597,6 +602,22 @@ class BleBridgeService : Service() {
     private fun publishMetrics(m: RowerMetrics) {
         BridgeBus.setRowerStreaming(true)
         val now = System.currentTimeMillis()
+        // La console du 500B accepte la connexion BLE pendant que son MCU dort encore :
+        // la séquence d'init est alors perdue -> données OK mais écran noir (tactile vivant).
+        // Si la première trame de données n'arrive que bien après la connexion, la console
+        // s'est réveillée entre-temps -> on refait une connexion GATT pour renvoyer l'init
+        // à la console réveillée (au plus 2 fois par démarrage du bridge).
+        if (autoWakeReconnects < 2 && connectedAtMs > 0L && now - connectedAtMs > 3_000L) {
+            autoWakeReconnects++
+            val gap = now - connectedAtMs
+            val g = gatt
+            scope.launch {
+                delay(1_000)
+                if (!running || gatt == null) return@launch
+                BridgeBus.log("Première trame reçue ${gap} ms après la connexion : la console s'est réveillée APRÈS le connectGatt (init perdue, écran noir) -> reconnexion GATT pour renvoyer l'init à la console réveillée.")
+                try { g?.disconnect() } catch (_: Exception) {}
+            }
+        }
         val dt = if (lastMetricsTimeMs > 0L) ((now - lastMetricsTimeMs) / 1000.0).coerceIn(0.0, 2.0) else 0.0
         lastMetricsTimeMs = now
         if (lastStrokeCount >= 0 && m.strokeCount < lastStrokeCount) {
@@ -769,22 +790,31 @@ class BleBridgeService : Service() {
     }
 
     /**
-     * « Réveiller écran » (bouton UI) : renvoie plusieurs fois les trames d'init
-     * d'affichage + les trames d'affichage courantes, pour rallumer la console du
-     * 500B quand elle s'est réveillée après la connexion (écran noir, tactile vivant).
+     * « Réveiller écran » (bouton UI) : rejoue la séquence d'init COMPLÈTE puis force
+     * une reconnexion GATT (déconnexion -> le scan reconnecte automatiquement). Si la
+     * console s'est réveillée après le connectGatt, l'init envoyée à ce moment-là est
+     * perdue : renvoyer des trames sur la même connexion ne rallume pas l'écran, mais
+     * un nouveau front de connexion reçu par la console réveillée, si.
      */
     private suspend fun wakeDisplay() {
         if (domyosWriteChar == null) {
             BridgeBus.log("RÉVEIL ÉCRAN: rameur non connecté -> abandon")
             return
         }
-        BridgeBus.log("RÉVEIL ÉCRAN: renvoi start tape + mode BT + trames d'affichage x10")
-        repeat(10) {
-            for (pkt in BleConstants.DOMYOS_DISPLAY_WAKE) writeDomyosFrame(pkt)
-            sendDisplayFrames()
-            delay(300)
+        BridgeBus.log("RÉVEIL ÉCRAN: renvoi de la séquence d'init complète + reconnexion GATT forcée")
+        for (pkt in BleConstants.DOMYOS_INIT) {
+            writeDomyosFrame(pkt)
+            delay(120)
         }
-        BridgeBus.log("RÉVEIL ÉCRAN: terminé")
+        sendDisplayFrames()
+        delay(500)
+        val g = gatt
+        if (g != null) {
+            BridgeBus.log("RÉVEIL ÉCRAN: déconnexion GATT -> reconnexion auto (scan) avec init renvoyée à la console réveillée")
+            try { g.disconnect() } catch (_: Exception) {}
+        } else {
+            BridgeBus.log("RÉVEIL ÉCRAN: terminé (gatt null, pas de reconnexion)")
+        }
     }
 
     /**
