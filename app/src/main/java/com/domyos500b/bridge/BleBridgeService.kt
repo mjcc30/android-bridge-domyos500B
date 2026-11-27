@@ -289,6 +289,10 @@ class BleBridgeService : Service() {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 BridgeBus.setDomyosConnected(true)
                 BridgeBus.log("Domyos CONNECTÉ (status=$status)")
+                // Workaround : certains chipsets suspendent l'advertising peripheral tant
+                // qu'une connexion centrale est active -> on le redémarre à chaque connexion.
+                try { advertiser?.stopAdvertising(advertiseCallback) } catch (_: Exception) {}
+                startAdvertising()
                 scope.launch {
                     try {
                         queue.enqueue { awaitOp("requestMtu") { g.requestMtu(MTU_REQUEST) } }
@@ -672,13 +676,18 @@ class BleBridgeService : Service() {
             return
         }
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            // BALANCED (250 ms) : plus robuste qu'en LOW_LATENCY quand le téléphone est
+            // simultanément connecté comme central au rameur (certains chipsets
+            // sacrifient l'advertising LOW_LATENCY dès qu'une connexion est active).
+            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
             .setConnectable(true)
             .setTimeout(0) // illimité
             .build()
         val advertiseData = AdvertiseData.Builder()
-            .setIncludeDeviceName(false) // le nom passe dans la scan response (limite 31 octets)
+            // Nom DANS le paquet principal : un scan passif (Windows/MyWhoosh HD) ne
+            // reçoit pas la scan response et verrait un périphérique sans nom.
+            .setIncludeDeviceName(true)
             .addServiceUuid(ParcelUuid(BleConstants.FTMS_SERVICE))
             .build()
         val scanResponse = AdvertiseData.Builder()
@@ -694,7 +703,7 @@ class BleBridgeService : Service() {
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
             BridgeBus.setAdvertising(true)
-            BridgeBus.log("Advertising démarré: \"${BleConstants.DEVICE_NAME}\" (service 0x1826, LOW_LATENCY / TX_HIGH)")
+            BridgeBus.log("Advertising démarré: \"${BleConstants.DEVICE_NAME}\" (service 0x1826, nom dans adv, BALANCED / TX_HIGH)")
         }
 
         override fun onStartFailure(errorCode: Int) {
@@ -716,7 +725,15 @@ class BleBridgeService : Service() {
                             // API 33+ : notifyCharacteristicChanged(device, char, confirm=false, value)
                             server.notifyCharacteristicChanged(device, char, false, frame)
                         } catch (e: Exception) {
-                            BridgeBus.log("notify 2AD1 -> ${device.address}: ${e.message}")
+                            // Client parti sans se désabonner : on le retire pour ne pas
+                            // spammer les logs à chaque trame.
+                            if (e is android.os.DeadObjectException) {
+                                subscribers.remove(device)
+                                BridgeBus.log("abonné ${device.address} mort, retiré (${subscribers.size} restant(s))")
+                                refreshMyWhooshStatus()
+                            } else {
+                                BridgeBus.log("notify 2AD1 -> ${device.address}: ${e.message}")
+                            }
                         }
                     }
                 }

@@ -9,3 +9,6 @@ local.properties
 gradle/wrapper/gradle-wrapper.jar
 # keystore décodé localement (le b64 committé est la source)
 keystore/debug.keystore
+bridge-logs.txt
+*.exe
+*.winmd
