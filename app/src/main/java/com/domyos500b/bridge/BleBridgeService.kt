@@ -719,14 +719,14 @@ class BleBridgeService : Service() {
         val advertiseData = AdvertiseData.Builder()
             // Nom DANS le paquet principal : un scan passif (Windows/MyWhoosh HD) ne
             // reçoit pas la scan response et verrait un périphérique sans nom.
+            // 0x180D dans le paquet principal aussi : le scan "Heart Rate" de
+            // MyWhoosh filtre sur ce service (UUID 16 bits = 3 octets, total ~14 o).
             .setIncludeDeviceName(true)
             .addServiceUuid(ParcelUuid(BleConstants.FTMS_SERVICE))
+            .addServiceUuid(ParcelUuid(BleConstants.HEART_RATE_SERVICE))
             .build()
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
-            // 0x180D dans la scan response (budget 31 octets) : le scan "Heart Rate"
-            // de MyWhoosh filtre sur ce service.
-            .addServiceUuid(ParcelUuid(BleConstants.HEART_RATE_SERVICE))
             .build()
         try {
             advertiser?.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
