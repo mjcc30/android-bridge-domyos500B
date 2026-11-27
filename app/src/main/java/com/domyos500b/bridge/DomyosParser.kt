@@ -31,7 +31,8 @@ object DomyosParser {
         val strokeCount = u16be(2)
         val pace = u16be(6)
         val cadence = packet[9].toInt() and 0xFF
-        // kcal = u16be(10), HR = packet[18] : non exploités côté FTMS.
+        // kcal = u16be(10) : non exploité côté FTMS.
+        val heartRate = packet[18].toInt() and 0xFF
         val distance = u16be(12)
         val power = FtmsParser.wattsFromPace(pace)
 
@@ -42,6 +43,7 @@ object DomyosParser {
             distanceMeters = distance,
             paceSecPer500m = pace,
             powerWatts = power,
+            heartRateBpm = heartRate,
             rawHex = packet.toHex()
         )
     }

@@ -11,6 +11,7 @@ data class RowerMetrics(
     val distanceMeters: Int,
     val paceSecPer500m: Int,     // secondes par 500 m (0 = absent)
     val powerWatts: Int,         // Watts (déjà normalisée : fallback via pace si le rameur envoie 0)
+    val heartRateBpm: Int = 0,   // FC (0 = absente) — relayée via le service 0x180D, pas via 2AD1
     val rawHex: String
 )
 
@@ -142,7 +143,15 @@ object FtmsParser {
 
     /** Trame d'initialisation (tout à zéro) envoyée tant qu'aucune donnée rameur n'est reçue. */
     fun idleFrame(): ByteArray = buildNormalizedFrame(
-        RowerMetrics(NORMALIZED_FLAGS, 0.0, 0, 0, 0, 0, "")
+        RowerMetrics(
+            flags = NORMALIZED_FLAGS,
+            strokeRateSpm = 0.0,
+            strokeCount = 0,
+            distanceMeters = 0,
+            paceSecPer500m = 0,
+            powerWatts = 0,
+            rawHex = ""
+        )
     )
 }
 

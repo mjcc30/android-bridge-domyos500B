@@ -85,9 +85,17 @@ class BleBridgeService : Service() {
 
     private var serverRowerDataChar: BluetoothGattCharacteristic? = null
     private var serverControlPointChar: BluetoothGattCharacteristic? = null
+    private var serverHeartRateChar: BluetoothGattCharacteristic? = null
 
     /** Centraux (MyWhoosh) ayant activé les notifications sur 0x2AD1 (accès multi-threads). */
     private val subscribers = java.util.Collections.synchronizedSet(mutableSetOf<BluetoothDevice>())
+
+    /** Centraux ayant activé les notifications sur 0x2A37 (Heart Rate Measurement). */
+    private val hrSubscribers = java.util.Collections.synchronizedSet(mutableSetOf<BluetoothDevice>())
+
+    /** Dernière FC reçue du rameur (0 = absente). */
+    @Volatile
+    private var latestHr = 0
 
     @Volatile
     private var latestFrame: ByteArray = FtmsParser.idleFrame()
@@ -193,6 +201,7 @@ class BleBridgeService : Service() {
         try { gattServer?.close() } catch (_: Exception) {}
         gattServer = null
         subscribers.clear()
+        hrSubscribers.clear()
         BridgeBus.setServiceRunning(false)
         BridgeBus.setAdvertising(false)
         BridgeBus.setDomyosConnected(false)
@@ -364,9 +373,10 @@ class BleBridgeService : Service() {
     private fun publishMetrics(m: RowerMetrics) {
         BridgeBus.publish(m)
         latestFrame = FtmsParser.buildNormalizedFrame(m)
+        latestHr = m.heartRateBpm
         BridgeBus.log(
             "   parse: ${m.strokeRateSpm} spm | ${m.strokeCount} coups | " +
-                "${m.distanceMeters} m | pace=${m.paceSecPer500m}s/500m | ${m.powerWatts} W"
+                "${m.distanceMeters} m | pace=${m.paceSecPer500m}s/500m | ${m.powerWatts} W | ${m.heartRateBpm} bpm"
         )
     }
 
@@ -563,7 +573,22 @@ class BleBridgeService : Service() {
         server.addService(ftmsService)
         serverRowerDataChar = rowerData
         serverControlPointChar = controlPoint
-        BridgeBus.log("GATT server FTMS exposé (2ACC / 2AD1 / 2AD3 / 2ADA / 2AD9)")
+
+        // Service Heart Rate 0x180D : MyWhoosh ne lit PAS la FC dans la trame 2AD1,
+        // il la cherche sur un service 0x180D (caractéristique 0x2A37) — on la relaie
+        // depuis l'octet 18 des paquets Domyos (ceinture fournie avec le rameur).
+        val heartRate = BluetoothGattCharacteristic(
+            BleConstants.HEART_RATE_MEASUREMENT,
+            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            BluetoothGattCharacteristic.PERMISSION_READ
+        ).apply { addDescriptor(cccd()) }
+        val hrService = BluetoothGattService(
+            BleConstants.HEART_RATE_SERVICE,
+            BluetoothGattService.SERVICE_TYPE_PRIMARY
+        ).apply { addCharacteristic(heartRate) }
+        server.addService(hrService)
+        serverHeartRateChar = heartRate
+        BridgeBus.log("GATT server exposé (FTMS 2ACC/2AD1/2AD3/2ADA/2AD9 + HR 180D/2A37)")
     }
 
     private val serverCallback = object : BluetoothGattServerCallback() {
@@ -590,6 +615,7 @@ class BleBridgeService : Service() {
                 BleConstants.ROWER_DATA -> latestFrame
                 BleConstants.FITNESS_MACHINE_STATUS -> byteArrayOf(0x00)
                 BleConstants.TRAINING_STATUS -> byteArrayOf(0x00)
+                BleConstants.HEART_RATE_MEASUREMENT -> byteArrayOf(0x00, latestHr.toByte())
                 else -> null
             }
             val server = gattServer ?: return
@@ -644,14 +670,20 @@ class BleBridgeService : Service() {
             offset: Int,
             value: ByteArray
         ) {
-            if (descriptor.uuid == BleConstants.CCCD &&
-                descriptor.characteristic.uuid == BleConstants.ROWER_DATA
-            ) {
+            if (descriptor.uuid == BleConstants.CCCD) {
                 val enabled = value.contentEquals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ||
                     value.contentEquals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
-                if (enabled) subscribers.add(device) else subscribers.remove(device)
-                refreshMyWhooshStatus()
-                BridgeBus.log("CCCD 0x2AD1 ${if (enabled) "ENABLE" else "DISABLE"} par ${device.address}")
+                when (descriptor.characteristic.uuid) {
+                    BleConstants.ROWER_DATA -> {
+                        if (enabled) subscribers.add(device) else subscribers.remove(device)
+                        refreshMyWhooshStatus()
+                        BridgeBus.log("CCCD 0x2AD1 ${if (enabled) "ENABLE" else "DISABLE"} par ${device.address}")
+                    }
+                    BleConstants.HEART_RATE_MEASUREMENT -> {
+                        if (enabled) hrSubscribers.add(device) else hrSubscribers.remove(device)
+                        BridgeBus.log("CCCD 0x2A37 ${if (enabled) "ENABLE" else "DISABLE"} par ${device.address}")
+                    }
+                }
             }
             if (responseNeeded) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
@@ -692,6 +724,9 @@ class BleBridgeService : Service() {
             .build()
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
+            // 0x180D dans la scan response (budget 31 octets) : le scan "Heart Rate"
+            // de MyWhoosh filtre sur ce service.
+            .addServiceUuid(ParcelUuid(BleConstants.HEART_RATE_SERVICE))
             .build()
         try {
             advertiser?.startAdvertising(settings, advertiseData, scanResponse, advertiseCallback)
@@ -734,6 +769,18 @@ class BleBridgeService : Service() {
                             } else {
                                 BridgeBus.log("notify 2AD1 -> ${device.address}: ${e.message}")
                             }
+                        }
+                    }
+                }
+                // Heart Rate Measurement 0x2A37 : flags 0x00 (FC uint8) + FC en bpm.
+                val hrChar = serverHeartRateChar
+                if (hrChar != null && server != null && hrSubscribers.isNotEmpty()) {
+                    val hrFrame = byteArrayOf(0x00, latestHr.toByte())
+                    for (device in hrSubscribers.toList()) {
+                        try {
+                            server.notifyCharacteristicChanged(device, hrChar, false, hrFrame)
+                        } catch (e: Exception) {
+                            if (e is android.os.DeadObjectException) hrSubscribers.remove(device)
                         }
                     }
                 }

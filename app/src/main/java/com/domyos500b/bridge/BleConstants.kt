@@ -27,6 +27,12 @@ object BleConstants {
     /** 0x2902 — Client Characteristic Configuration Descriptor. */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
+    /** 0x180D — Heart Rate Service : exposé pour relayer la FC lue sur le rameur (ceinture Domyos). */
+    val HEART_RATE_SERVICE: UUID = UUID.fromString("0000180D-0000-1000-8000-00805f9b34fb")
+
+    /** 0x2A37 — Heart Rate Measurement (Notify). */
+    val HEART_RATE_MEASUREMENT: UUID = UUID.fromString("00002A37-0000-1000-8000-00805f9b34fb")
+
     /**
      * Nom BLE diffusé vers MyWhoosh. « PM5 » = nom du moniteur Concept2 reconnu
      * nativement par MyWhoosh (même nom que le pont virtuel qdomyos-zwift) :
