@@ -33,6 +33,7 @@ import android.os.IBinder
 import android.os.ParcelUuid
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -204,6 +205,9 @@ class BleBridgeService : Service() {
         hrSubscribers.clear()
         hrServiceAdded = false
         pendingHrService = null
+        integratedDistanceM = 0.0
+        lastMetricsTimeMs = 0L
+        lastStrokeCount = -1
         BridgeBus.setServiceRunning(false)
         BridgeBus.setAdvertising(false)
         BridgeBus.setDomyosConnected(false)
@@ -372,13 +376,28 @@ class BleBridgeService : Service() {
         }
     }
 
+    // Distance intégrée localement : le compteur du Domyos progresse trop lentement
+    // (quelques mètres après des dizaines de coups) et MyWhoosh affiche/intègre le
+    // champ Total Distance de 2AD1 pour la position/vitesse du bateau -> bateau à l'arrêt.
+    // On intègre ici la vitesse dérivée du pace : v (m/s) = 500 / pace(s/500m).
+    @Volatile private var integratedDistanceM = 0.0
+    private var lastMetricsTimeMs = 0L
+    private var lastStrokeCount = -1
+
     private fun publishMetrics(m: RowerMetrics) {
-        BridgeBus.publish(m)
-        latestFrame = FtmsParser.buildNormalizedFrame(m)
+        val now = System.currentTimeMillis()
+        val dt = if (lastMetricsTimeMs > 0L) ((now - lastMetricsTimeMs) / 1000.0).coerceIn(0.0, 2.0) else 0.0
+        lastMetricsTimeMs = now
+        if (lastStrokeCount >= 0 && m.strokeCount < lastStrokeCount) integratedDistanceM = 0.0 // nouvelle session
+        lastStrokeCount = m.strokeCount
+        if (m.paceSecPer500m > 0) integratedDistanceM += (500.0 / m.paceSecPer500m) * dt
+        val mEff = m.copy(distanceMeters = integratedDistanceM.roundToInt())
+        BridgeBus.publish(mEff)
+        latestFrame = FtmsParser.buildNormalizedFrame(mEff)
         latestHr = m.heartRateBpm
         BridgeBus.log(
             "   parse: ${m.strokeRateSpm} spm | ${m.strokeCount} coups | " +
-                "${m.distanceMeters} m | pace=${m.paceSecPer500m}s/500m | ${m.powerWatts} W | ${m.heartRateBpm} bpm"
+                "${mEff.distanceMeters} m (intégrée) | pace=${m.paceSecPer500m}s/500m | ${m.powerWatts} W | ${m.heartRateBpm} bpm"
         )
     }
 
