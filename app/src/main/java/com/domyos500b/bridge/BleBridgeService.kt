@@ -202,6 +202,8 @@ class BleBridgeService : Service() {
         gattServer = null
         subscribers.clear()
         hrSubscribers.clear()
+        hrServiceAdded = false
+        pendingHrService = null
         BridgeBus.setServiceRunning(false)
         BridgeBus.setAdvertising(false)
         BridgeBus.setDomyosConnected(false)
@@ -582,16 +584,43 @@ class BleBridgeService : Service() {
             BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
             BluetoothGattCharacteristic.PERMISSION_READ
         ).apply { addDescriptor(cccd()) }
-        val hrService = BluetoothGattService(
+        pendingHrService = BluetoothGattService(
             BleConstants.HEART_RATE_SERVICE,
             BluetoothGattService.SERVICE_TYPE_PRIMARY
         ).apply { addCharacteristic(heartRate) }
-        server.addService(hrService)
         serverHeartRateChar = heartRate
-        BridgeBus.log("GATT server exposé (FTMS 2ACC/2AD1/2AD3/2ADA/2AD9 + HR 180D/2A37)")
+        // ATTENTION : ne PAS appeler addService(hrService) ici. Deux addService()
+        // back-to-back font planter le stub binder du framework dans onServiceAdded
+        // (IndexOutOfBoundsException) -> table de handles corrompue -> plus aucun
+        // descripteur reconnu ("no desc for handle") -> aucun CCCD écrit par le
+        // client -> MyWhoosh reste à 0 W / 0 spm. On ajoute le service HR dans
+        // onServiceAdded(FTMS) ci-dessous, une fois le premier confirmé.
+        BridgeBus.log("GATT server: FTMS 2ACC/2AD1/2AD3/2ADA/2AD9 exposé; HR 180D/2A37 ajouté après confirmation onServiceAdded")
     }
 
+    /** Service HR en attente d'être ajouté après confirmation du service FTMS. */
+    private var pendingHrService: BluetoothGattService? = null
+    private var hrServiceAdded = false
+
     private val serverCallback = object : BluetoothGattServerCallback() {
+
+        override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+            BridgeBus.log("onServiceAdded ${service.uuid} status=$status")
+            // Ajout chaîné du service HR une fois le FTMS confirmé : évite la course
+            // du framework (voir commentaire dans startGattServer).
+            if (status == BluetoothGatt.GATT_SUCCESS &&
+                service.uuid == BleConstants.FTMS_SERVICE &&
+                !hrServiceAdded
+            ) {
+                hrServiceAdded = true
+                val hr = pendingHrService
+                pendingHrService = null
+                if (hr != null) {
+                    gattServer?.addService(hr)
+                    BridgeBus.log("Service HR 0x180D/2A37 ajouté (chaîné après FTMS)")
+                }
+            }
+        }
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
