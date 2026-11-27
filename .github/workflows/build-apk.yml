@@ -72,6 +72,9 @@ jobs:
       - name: Restaurer la clé de signature debug stable
         run: base64 -d keystore/debug.keystore.b64 > keystore/debug.keystore
 
+      - name: Tests unitaires (parsers, trames, checksums)
+        run: ./gradlew testDebugUnitTest --no-daemon
+
       - name: Compiler l'APK debug
         run: ./gradlew assembleDebug --no-daemon
 
