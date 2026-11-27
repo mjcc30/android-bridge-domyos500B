@@ -127,11 +127,11 @@ release versionnée avec QR code.
 
 | Symptôme | Cause probable | Action |
 |---|---|---|
-| Pastille `Domyos` rouge | Rameur éteint / pas en mode BT / hors portée | Logo BT sur la console, rester à < 2 m |
+| Pastille `Domyos` rouge | Rameur éteint / pas en mode BT / hors portée | **Ramez un coup pour réveiller la console** (elle n'advertise qu'une fois allumée), rester à < 2 m — le scan se reconnecte tout seul dès le réveil |
 | Pastille `MyWhoosh` rouge, 0 W dans le jeu | MyWhoosh pas abonné (CCCD non écrit) | Voir logs : `CCCD 0x2AD1 ENABLE` doit apparaître ; re-appairer PM5 |
 | « App not installed » à la mise à jour | Signature différente (vieille install) | Désinstaller + réinstaller via le QR nightly |
 | Le bateau n'avance pas dans MyWhoosh | Distance 2AD1 à 0 | Corrigé (distance intégrée) — mettre à jour le nightly |
-| L'écran du rameur n'affiche rien | Trames `f0 cb`/`f0 cd` absentes des logs | Mettre à jour le nightly (fonctionnalité récente) |
+| L'écran du rameur n'affiche rien | Trames `f0 cb`/`f0 cd` absentes des logs, ou console endormie (pas de coup de rame) | Mettre à jour le nightly ; **ramer un coup** — dès la connexion le bridge envoie des trames (zéros + temps) même au repos, et un message orange s'affiche dans l'app si aucune donnée n'arrive |
 | L'écran du rameur affiche 0 / des valeurs fausses | Champ non piloté ou mauvais codage (mapping 500B : Spm=7-8, pace=12-13 LE, Kcal=15, Km=19-20) | Bouton « Test écran » + photo de la console -> voir docs/protocole-domyos.md §3.2 |
 | MyWhoosh HD (Windows) ne voit pas PM5 | Scan passif sans nom, ou autre appli BLE ouverte | Le nom est dans le paquet principal ; fermer Bluetooth LE Explorer |
 

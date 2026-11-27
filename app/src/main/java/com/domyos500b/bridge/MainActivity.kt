@@ -140,6 +140,22 @@ fun BridgeScreen() {
             )
         }
 
+        // La console du Domyos 500B ne s'allume et n'émet qu'au premier coup de rame :
+        // on guide l'utilisateur plutôt que de laisser un écran noir / des pastilles rouges.
+        if (uiState.serviceRunning && !uiState.domyosConnected) {
+            Text(
+                text = "Rameur non détecté : si la console du rameur est éteinte, ramez un coup pour la réveiller — le scan continue et la connexion se fera automatiquement.",
+                color = Color(0xFFFFC107),
+                fontSize = 12.sp
+            )
+        } else if (uiState.serviceRunning && uiState.domyosConnected && !uiState.rowerStreaming) {
+            Text(
+                text = "Rameur connecté mais aucune donnée reçue pour l'instant — ramez un coup pour démarrer la session (la console se réveille au premier coup de rame).",
+                color = Color(0xFFFFC107),
+                fontSize = 12.sp
+            )
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             MetricsCard("Watts", "${metrics.watts} W", Modifier.weight(1f))
             MetricsCard("Pace", formatPace(metrics.paceSecPer500m), Modifier.weight(1f))

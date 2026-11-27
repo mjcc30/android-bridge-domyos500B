@@ -13,6 +13,7 @@ data class BridgeUiState(
     val domyosConnected: Boolean = false,
     val mywhooshConnected: Boolean = false,
     val resistanceLevel: Int = 0, // niveau de résistance actuel du rameur (1-15)
+    val rowerStreaming: Boolean = false, // au moins une trame de données reçue du rameur depuis la connexion
     val logs: List<String> = emptyList()
 )
 
@@ -44,6 +45,7 @@ object BridgeBus {
     fun setDomyosConnected(v: Boolean) = uiState.update { it.copy(domyosConnected = v) }
     fun setMyWhooshConnected(v: Boolean) = uiState.update { it.copy(mywhooshConnected = v) }
     fun setResistance(v: Int) = uiState.update { it.copy(resistanceLevel = v) }
+    fun setRowerStreaming(v: Boolean) = uiState.update { it.copy(rowerStreaming = v) }
 
     fun log(line: String) {
         val ts = tsFormat.format(Date())

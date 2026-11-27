@@ -115,6 +115,10 @@ class BleBridgeService : Service() {
     @Volatile
     private var sessionStartMs = 0L
 
+    /** Horodatage de la connexion GATT au rameur (repli pour le temps écran si pas encore de coup). */
+    @Volatile
+    private var connectedAtMs = 0L
+
     /** Dernière FC non nulle reçue + son horodatage : on la conserve [HR_HOLD_MS] quand le rameur renvoie 0. */
     private var lastHrValue = 0
     private var lastHrTimeMs = 0L
@@ -191,6 +195,20 @@ class BleBridgeService : Service() {
             startAdvertising()
             startScan()
             startNotifyTicker()
+            // La console du 500B ne s'allume / n'advertise qu'au premier coup de rame :
+            // si aucun rameur n'est vu, on le signale clairement (le scan continue en
+            // arrière-plan et se connectera tout seul dès que la console se réveille).
+            scope.launch {
+                var hinted = false
+                while (running && gatt == null) {
+                    delay(10_000)
+                    if (!running || gatt != null) break
+                    if (!hinted) {
+                        hinted = true
+                        BridgeBus.log("Aucun rameur détecté pour l'instant — si la console du Domyos est éteinte, ramez un coup pour la réveiller : le scan continue et la connexion se fera automatiquement.")
+                    }
+                }
+            }
         }
         return START_STICKY
     }
@@ -258,10 +276,12 @@ class BleBridgeService : Service() {
         lastStrokeCount = -1
         latestRawMetrics = null
         sessionStartMs = 0L
+        connectedAtMs = 0L
         lastHrValue = 0
         lastHrTimeMs = 0L
         currentResistance = 8
         BridgeBus.setResistance(0)
+        BridgeBus.setRowerStreaming(false)
         BridgeBus.setServiceRunning(false)
         BridgeBus.setAdvertising(false)
         BridgeBus.setDomyosConnected(false)
@@ -446,6 +466,7 @@ class BleBridgeService : Service() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 BridgeBus.setDomyosConnected(true)
+                connectedAtMs = System.currentTimeMillis()
                 BridgeBus.log("Domyos CONNECTÉ (status=$status)")
                 // Latence minimale sur la liaison rameur (métriques à ~1 Hz mais
                 // keepalive/écran à 1 Hz : on veut le délai le plus court possible).
@@ -466,13 +487,41 @@ class BleBridgeService : Service() {
                         BridgeBus.log("Session rameur: ${e.message}")
                     }
                 }
+                // Watchdog « console endormie » : la console du 500B ne s'allume et
+                // n'émet des trames `f0 bc` qu'au premier coup de rame. Si on est
+                // connecté mais silencieux, on le signale et on renvoie l'init une fois.
+                scope.launch {
+                    var hinted = false
+                    while (running && gatt != null && latestRawMetrics == null) {
+                        delay(6_000)
+                        if (!running || gatt == null || latestRawMetrics != null) break
+                        if (!hinted) {
+                            hinted = true
+                            BridgeBus.log("Rameur connecté mais aucune trame reçue — ramez un coup pour réveiller la console et démarrer la session ; renvoi de la séquence d'init.")
+                            if (proprietaryActive) {
+                                for (pkt in BleConstants.DOMYOS_INIT) {
+                                    writeDomyosFrame(pkt)
+                                    delay(120)
+                                }
+                            }
+                        } else {
+                            BridgeBus.log("Toujours aucune trame du rameur — ramez un coup pour démarrer la session.")
+                        }
+                    }
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 BridgeBus.setDomyosConnected(false)
+                BridgeBus.setRowerStreaming(false)
                 proprietaryActive = false
                 domyosWriteChar = null
                 lastHrValue = 0
                 lastHrTimeMs = 0L
                 sessionStartMs = 0L
+                connectedAtMs = 0L
+                latestRawMetrics = null
+                integratedDistanceM = 0.0
+                lastMetricsTimeMs = 0L
+                lastStrokeCount = -1
                 BridgeBus.setResistance(0)
                 BridgeBus.log("Domyos DÉCONNECTÉ (status=$status) -> reconnexion auto dans ${RECONNECT_DELAY_MS} ms")
                 resumePending(false)
@@ -541,6 +590,7 @@ class BleBridgeService : Service() {
     private var lastStrokeCount = -1
 
     private fun publishMetrics(m: RowerMetrics) {
+        BridgeBus.setRowerStreaming(true)
         val now = System.currentTimeMillis()
         val dt = if (lastMetricsTimeMs > 0L) ((now - lastMetricsTimeMs) / 1000.0).coerceIn(0.0, 2.0) else 0.0
         lastMetricsTimeMs = now
@@ -709,11 +759,26 @@ class BleBridgeService : Service() {
      * Envoie une paire de trames d'affichage (f0 cd distance + f0 cb temps/Spm/pace/Kcal/Km).
      * La distance affichée est la distance intégrée localement (le compteur du rameur
      * progresse trop lentement), comme dans le flux FTMS vers MyWhoosh.
+     * Tant qu'aucune trame `f0 bc` n'a été reçue (console réveillée mais rameur au repos),
+     * on envoie des zéros avec le temps écoulé depuis la connexion : la console du 500B
+     * reste ainsi allumée et affiche 000 / 00:00 au lieu de rester noire.
      */
     private suspend fun sendDisplayFrames() {
-        val m = latestRawMetrics ?: return
+        val m = latestRawMetrics ?: RowerMetrics(
+            flags = FtmsParser.NORMALIZED_FLAGS,
+            strokeRateSpm = 0.0,
+            strokeCount = 0,
+            distanceMeters = 0,
+            paceSecPer500m = 0,
+            powerWatts = 0,
+            heartRateBpm = 0,
+            caloriesKcal = 0,
+            resistanceLevel = 0,
+            rawHex = ""
+        )
+        val startMs = if (sessionStartMs > 0L) sessionStartMs else connectedAtMs
         val elapsedSec =
-            if (sessionStartMs > 0L) ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
+            if (startMs > 0L) ((System.currentTimeMillis() - startMs) / 1000).toInt()
             else 0
         val distM = integratedDistanceM.roundToInt()
         val frames = listOf(
