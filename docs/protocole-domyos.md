@@ -91,54 +91,55 @@ Deux trames de **27 octets**, envoyées à ~1 Hz, chacune écrite en **2 paquets
 | Octets | Valeur |
 |---|---|
 | 0-2 | `F0 CD 01` |
-| 3-4 | distance u16 BE (unité 0,1 km = **valeur brute reçue octets 12-13**) |
+| 3-4 | distance u16 BE, **unité 0,1 km** (`odometer*10` chez qdomyos ; le pont envoie sa distance intégrée locale / 10) |
 | 5 | `01` |
 | 6-25 | `FF` × 20 |
 | 26 | checksum |
 
-Exemple émis par le pont (distance brute `0x0433`) :
+Exemple émis par le pont (distance intégrée 10820 m → 1082 unités = `0x043A`) :
 
 ```
-F0 CD 01 04 33 01 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF   (20 octets)
-FF FF FF FF FF FF E2                                            (7 octets, E2 = checksum)
+F0 CD 01 04 3A 01 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF   (20 octets)
+FF FF FF FF FF FF E9                                            (7 octets, E9 = checksum)
 ```
 
-### 3.2 `f0 cb` — temps, vitesse, FC, cadence, calories
+### 3.2 `f0 cb` — mapping **confirmé** du firmware 500B (photos de la console en mode BT)
 
-| Octets | Valeur |
-|---|---|
-| 0-2 | `F0 CB 03` |
-| 3 | temps écoulé, **minutes** |
-| 4 | temps écoulé, **secondes** |
-| 5 | `FF` |
-| 6 | `01` |
-| 7-8 | **vitesse km/h** u16 BE (calculée : `1800 / pace`) |
-| 9-11 | `02 01 00` |
-| 12 | **FC** (bpm) |
-| 13-15 | `00 00 01` |
-| 16 | **cadence** (spm) |
-| 17-18 | `00 00` |
-| 19-20 | **calories** u16 BE (valeur brute reçue octets 10-11) |
-| 21 | `01` |
-| 22-23 | `00 00` |
-| 24 | `01` |
-| 25 | `FF` |
-| 26 | checksum |
+Le firmware du 500B **ne dispose pas les champs comme le changyow de qdomyos-zwift**
+(vitesse en 7-8, FC en 12, kcal en 19-20). Mapping constaté empiriquement sur machine
+réelle (photos 27/11/2026 + trames « Test écran » : octet i = 10+i, le champ Spm
+affichait « 370 » pour 7-8 = `0x1112` = 4370, tronqué à 3 chiffres) :
 
-Exemple émis par le pont (3 s, 9 km/h, FC 0, 27 spm, 4 kcal) :
+| Octets | Champ console | Codage observé |
+|---|---|---|
+| 0-2 | `F0 CB 03` | — |
+| 3 | **Time** minutes | affiché en `%04d` de `min*60+sec` (11 min 44 s → « 0704 ») |
+| 4 | **Time** secondes | idem |
+| 5 | `FF` | — |
+| 6 | `01` | — |
+| 7-8 | **Spm** | u16 BE, 3 chiffres (mod 1000) |
+| 9-11 | `02 01 00` | — |
+| 12-13 | **Time/500M** | u16 **LE**, affiché `M:SS` avec min = v/100, sec = v%100 (81 → « 0:81 », 100 → « 1:00 ») : on encode le pace en `min*100+sec` (3:40 → 340) |
+| 14 | `01` | affiché « 01 » en bas de l'écran (n° de programme, pas la résistance) |
+| 15 | **Kcal** | 1 octet (capé à 255) |
+| 16 | cadence spm | champ non visible sur le 500B en mode BT (icône BT au milieu) |
+| 17-18 | `01 01` | — |
+| 19-20 | **Km** | affichage `hi.lo` : octet 19 = partie entière km, octet 20 = centièmes (12 → « 0.12 », 2 → « 00.2 » ; quirk : 0,05 km s'affiche « 0.5 ») |
+| 21-25 | `01 FF FF FF FF` | — |
+| 26 | checksum | somme des 26 premiers octets & 0xFF |
+
+Le champ **Count** (coups) et le « 01 » de programme sont gérés par la console
+elle-même ; la **FC n'est pas affichée** en mode BT (champ remplacé par l'icône BT).
+
+Exemple émis par le pont (3 s, 27 spm, pace 274 s = 4:34, 4 kcal, 100 m) :
 
 ```
-F0 CB 03 00 03 FF 01 00 09 02 01 00 00 00 01 00 1B 01 01 00   (20 octets)
-04 01 FF FF FF FF EC                                            (7 octets, EC = checksum)
+F0 CB 03 00 03 FF 01 00 1B 02 01 00 B2 01 01 04 1B 01 01 00   (20 octets)
+0A 01 FF FF FF FF BB                                            (7 octets, BB = checksum)
 ```
 
-> **Note 500B (constaté sur machine réelle)** : la disposition effectivement utilisée
-> par le firmware de la console 500B semble différer de celle du changyow de
-> qdomyos-zwift : sur photos, le champ **Km** semblait piloté par les octets 19-20
-> (unité 0,01 km — il affichait la valeur des kcal envoyée en 19-20) et le champ
-> **Kcal** par les octets 13-14 (toujours 0 car le pont les laissait à 0), tandis que
-> le temps (3-4) correspondait bien. Le bouton **« Test écran »** de l'app envoie des
-> trames marqueurs (octet i = 10+i) pour confirmer ce mapping octet par octet.
+> Le bouton **« Test écran »** de l'app envoie des trames marqueurs (octet i = 10+i)
+> pour re-vérifier ce mapping octet par octet sur une photo de la console.
 
 ## 4. Autres commandes
 

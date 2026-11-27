@@ -687,9 +687,10 @@ class BleBridgeService : Service() {
 
     /**
      * Rafraîchit l'écran du rameur à 1 Hz en lui renvoyant ses propres métriques
-     * (trames `f0 cd` distance + `f0 cb` temps/vitesse/FC/cadence/kcal), comme le
-     * fait Kinomap ou qdomyos-zwift quand un central est connecté : sans ces trames,
-     * la console du 500B n'affiche pas les données de la session.
+     * (trames `f0 cd` distance + `f0 cb` temps/cadence/pace/kcal/distance, mapping
+     * 500B cf. [DomyosParser]), comme le fait Kinomap ou qdomyos-zwift quand un
+     * central est connecté : sans ces trames, la console du 500B n'affiche pas
+     * les données de la session.
      * Chaque trame de 27 octets est écrite en 2 paquets (20 + 7) pour tenir dans
      * un MTU 23 si le module ne négocie pas davantage.
      */
@@ -704,18 +705,22 @@ class BleBridgeService : Service() {
         }
     }
 
-    /** Envoie une paire de trames d'affichage (f0 cd distance + f0 cb temps/vitesse/FC/cadence/kcal). */
+    /**
+     * Envoie une paire de trames d'affichage (f0 cd distance + f0 cb temps/Spm/pace/Kcal/Km).
+     * La distance affichée est la distance intégrée localement (le compteur du rameur
+     * progresse trop lentement), comme dans le flux FTMS vers MyWhoosh.
+     */
     private suspend fun sendDisplayFrames() {
         val m = latestRawMetrics ?: return
         val elapsedSec =
             if (sessionStartMs > 0L) ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
             else 0
-        val speedKmh = if (m.paceSecPer500m > 0) 1800 / m.paceSecPer500m else 0
+        val distM = integratedDistanceM.roundToInt()
         val frames = listOf(
-            DomyosParser.buildDistanceDisplayFrame(m.distanceMeters),
+            DomyosParser.buildDistanceDisplayFrame(distM),
             DomyosParser.buildDisplayFrame(
-                elapsedSec, speedKmh, m.heartRateBpm,
-                m.strokeRateSpm.roundToInt(), m.caloriesKcal
+                elapsedSec, m.strokeRateSpm.roundToInt(), m.paceSecPer500m,
+                m.caloriesKcal, distM
             )
         )
         for (frame in frames) {

@@ -80,7 +80,8 @@ Bouton **« Envoyer les logs »** : partage la console interne (trames hex TX/RX
   (11 trames, dont `f0 cb 02 …` qui passe la console en mode « affichage piloté par
   l'app » et `f0 cb ff …` « start tape »), puis à 1 Hz le pont renvoie au 500B ses
   propres métriques via les trames d'affichage `f0 cd` (distance) et `f0 cb` (temps,
-  vitesse, FC, cadence, kcal), comme Kinomap / qdomyos-zwift.
+  cadence → Spm, pace → Time/500M, kcal, distance → Km — mapping 500B confirmé par
+  photos, voir docs/protocole-domyos.md §3.2), comme Kinomap / qdomyos-zwift.
 - **FC** : lue sur le rameur (octet 18 des `f0 bc`) **et directement sur la ceinture**
   (connexion 0x180D/2A37 dédiée) — la FC arrive donc dans MyWhoosh même tant que la
   console n'a pas encore appairé la ceinture. Quand tout renvoie 0 (pause), la
@@ -90,9 +91,9 @@ Bouton **« Envoyer les logs »** : partage la console interne (trames hex TX/RX
   (certains chipsets sacrifient le LOW_LATENCY à ce moment-là).
 - **Diagnostic écran** : le bouton **« Test écran »** envoie des trames « marqueurs »
   (`f0 cb` / `f0 cd` avec une valeur distincte par octet + résistance 10) pendant ~6 s :
-  une photo de la console permet de lire quel octet pilote quel champ (utile car le
-  firmware du 500B ne semble pas disposer les champs exactement comme le changyow de
-  qdomyos-zwift — voir docs/protocole-domyos.md §3).
+  une photo de la console permet de relire quel octet pilote quel champ (le firmware du
+  500B ne dispose pas les champs comme le changyow de qdomyos-zwift — mapping confirmé
+  en §3.2 de docs/protocole-domyos.md).
 - **Résistance** : réglable depuis l'app (boutons « Résistance −/+ », trame `f0 ad …`
   niveau 1-15) et relayée depuis MyWhoosh via le Control Point FTMS opcode 0x04
   (Set Target Resistance). Le niveau lu (octet 14 des paquets `f0 bc`) est affiché.
@@ -131,7 +132,7 @@ release versionnée avec QR code.
 | « App not installed » à la mise à jour | Signature différente (vieille install) | Désinstaller + réinstaller via le QR nightly |
 | Le bateau n'avance pas dans MyWhoosh | Distance 2AD1 à 0 | Corrigé (distance intégrée) — mettre à jour le nightly |
 | L'écran du rameur n'affiche rien | Trames `f0 cb`/`f0 cd` absentes des logs | Mettre à jour le nightly (fonctionnalité récente) |
-| L'écran du rameur affiche 0 / des valeurs fausses | Mauvaise disposition des champs (firmware 500B ≠ changyow qdomyos) | Bouton « Test écran » + photo de la console -> mapping en cours |
+| L'écran du rameur affiche 0 / des valeurs fausses | Champ non piloté ou mauvais codage (mapping 500B : Spm=7-8, pace=12-13 LE, Kcal=15, Km=19-20) | Bouton « Test écran » + photo de la console -> voir docs/protocole-domyos.md §3.2 |
 | MyWhoosh HD (Windows) ne voit pas PM5 | Scan passif sans nom, ou autre appli BLE ouverte | Le nom est dans le paquet principal ; fermer Bluetooth LE Explorer |
 
 ## Limitations connues
@@ -141,8 +142,12 @@ release versionnée avec QR code.
   0x05 non relayée vers le rameur).
 - La puissance affichée est **recalculée depuis le pace** (le 500B ne la mesure pas en
   BLE propriétaire).
-- La distance envoyée à MyWhoosh est l'intégration locale (plus fidèle que le compteur
-  du rameur) ; l'écran du rameur, lui, reçoit la valeur brute du rameur.
+- La distance envoyée à MyWhoosh **et à l'écran du rameur** est l'intégration locale
+  (plus fidèle que le compteur du rameur, qui progresse trop lentement).
+- Sur l'écran du 500B en mode BT : la FC n'est pas affichée (icône BT à la place),
+  Count = compteur de coups de la console, « 01 » en bas = n° de programme (pas la
+  résistance), et les distances < 0,1 km s'affichent ×10 sur le champ Km (quirk du
+  firmware, ex. 0,05 km → « 0.5 »).
 - La disposition des champs d'affichage `f0 cb` du 500B est **en cours de
   reverse-engineering** (bouton « Test écran » + photo) : sur les photos réelles, la
   distance (Km) semblait lue aux octets 19-20 et les kcal aux octets 13-14, soit

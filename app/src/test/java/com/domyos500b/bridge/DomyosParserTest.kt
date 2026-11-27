@@ -66,47 +66,63 @@ class DomyosParserTest {
     }
 
     @Test
-    fun displayFrameMatchesCapturedFrame() {
-        // trame f0 cb réellement émise par le pont (log émulateur) : 3 s, 9 km/h, FC 0, 27 spm, 4 kcal
-        val f = DomyosParser.buildDisplayFrame(elapsedSec = 3, speedKmh = 9, hrBpm = 0, cadenceSpm = 27, caloriesKcal = 4)
+    fun displayFrameMatchesExpected500bLayout() {
+        // trame f0 cb layout 500B : 3 s, 27 spm, pace 274 s (4:34 -> 434), 4 kcal, 100 m (0.10 km)
+        val f = DomyosParser.buildDisplayFrame(elapsedSec = 3, cadenceSpm = 27, paceSecPer500m = 274, caloriesKcal = 4, distanceMeters = 100)
         assertEquals(27, f.size)
         assertArrayEquals(
-            hex("F0 CB 03 00 03 FF 01 00 09 02 01 00 00 00 01 00 1B 01 01 00 04 01 FF FF FF FF EC"),
+            hex("F0 CB 03 00 03 FF 01 00 1B 02 01 00 B2 01 01 04 1B 01 01 00 0A 01 FF FF FF FF BB"),
             f
         )
     }
 
     @Test
-    fun distanceFrameMatchesCapturedFrame() {
-        // trame f0 cd réellement émise par le pont (log émulateur) : distance brute 0x0433
-        val f = DomyosParser.buildDistanceDisplayFrame(0x0433)
+    fun distanceFrameCarriesTenthOfKm() {
+        // trame f0 cd : distance en unités de 0,1 km (odometer*10 chez qdomyos) — 10820 m -> 1082 = 0x043A
+        val f = DomyosParser.buildDistanceDisplayFrame(10_820)
         assertEquals(27, f.size)
         assertArrayEquals(
-            hex("F0 CD 01 04 33 01 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF E2"),
+            hex("F0 CD 01 04 3A 01 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF E9"),
             f
         )
     }
 
     @Test
     fun displayFrameFieldPositions() {
-        val f = DomyosParser.buildDisplayFrame(elapsedSec = 125, speedKmh = 0x1234, hrBpm = 81, cadenceSpm = 26, caloriesKcal = 0x0102)
+        // mapping 500B : Time=[3]min/[4]sec, Spm=[7,8] u16 BE, pace=[12,13] u16 LE (min*100+sec),
+        // Kcal=[15], cadence=[16], Km=[19] partie entière / [20] centièmes
+        val f = DomyosParser.buildDisplayFrame(elapsedSec = 125, cadenceSpm = 300, paceSecPer500m = 220, caloriesKcal = 258, distanceMeters = 1234)
         assertEquals(2, f[3].toInt())          // 125 s = 2 min
         assertEquals(5, f[4].toInt())          // 125 % 60 = 5 s
-        assertEquals(0x12, f[7].toInt() and 0xFF)
-        assertEquals(0x34, f[8].toInt() and 0xFF)
-        assertEquals(81, f[12].toInt() and 0xFF)
-        assertEquals(26, f[16].toInt() and 0xFF)
-        assertEquals(0x01, f[19].toInt() and 0xFF)
-        assertEquals(0x02, f[20].toInt() and 0xFF)
+        assertEquals(0x01, f[7].toInt() and 0xFF)  // 300 = 0x012C
+        assertEquals(0x2C, f[8].toInt() and 0xFF)
+        assertEquals(0x54, f[12].toInt() and 0xFF) // 220 s = 3:40 -> 340 = 0x0154, LE : lo d'abord
+        assertEquals(0x01, f[13].toInt() and 0xFF)
+        assertEquals(0xFF, f[15].toInt() and 0xFF) // kcal 258 capé à 255
+        assertEquals(0xFF, f[16].toInt() and 0xFF) // cadence 300 capée à 255
+        assertEquals(0x01, f[19].toInt() and 0xFF) // 1234 m = 1.234 km -> partie entière 1
+        assertEquals(0x17, f[20].toInt() and 0xFF) // centièmes 23
+    }
+
+    @Test
+    fun displayFrameKmEncodingMatchesConsolePhotos() {
+        // photos de la console 500B : valeur 12 en [19,20] -> affichée "0.12" ; 2 -> "00.2"
+        // => la console affiche "hi.lo" ; on encode donc 1200 m -> "1.20", 220 m -> "0.22"
+        val f1 = DomyosParser.buildDisplayFrame(0, 0, 0, 0, 1200)
+        assertEquals(1, f1[19].toInt() and 0xFF)
+        assertEquals(20, f1[20].toInt() and 0xFF)
+        val f2 = DomyosParser.buildDisplayFrame(0, 0, 0, 0, 220)
+        assertEquals(0, f2[19].toInt() and 0xFF)
+        assertEquals(22, f2[20].toInt() and 0xFF)
     }
 
     @Test
     fun checksumIsSumOfFirst26Bytes() {
         for (frame in listOf(
-            DomyosParser.buildDisplayFrame(3, 9, 0, 27, 4),
-            DomyosParser.buildDisplayFrame(125, 300, 81, 26, 1000),
+            DomyosParser.buildDisplayFrame(3, 27, 274, 4, 100),
+            DomyosParser.buildDisplayFrame(125, 300, 220, 1000, 65_535),
             DomyosParser.buildDistanceDisplayFrame(0),
-            DomyosParser.buildDistanceDisplayFrame(0xFFFF)
+            DomyosParser.buildDistanceDisplayFrame(999_999)
         )) {
             var sum = 0
             for (i in 0 until 26) sum += frame[i].toInt() and 0xFF
@@ -199,13 +215,16 @@ class DomyosParserTest {
 
     @Test
     fun displayFrameClampsOutOfRangeValues() {
-        val f = DomyosParser.buildDisplayFrame(elapsedSec = 100_000, speedKmh = 99_999, hrBpm = 999, cadenceSpm = -5, caloriesKcal = -1)
+        val f = DomyosParser.buildDisplayFrame(elapsedSec = 100_000, cadenceSpm = 99_999, paceSecPer500m = -5, caloriesKcal = -1, distanceMeters = -1)
         assertEquals(255, f[3].toInt() and 0xFF)   // minutes capées à 255
-        assertEquals(0xFF, f[7].toInt() and 0xFF)  // vitesse u16
+        assertEquals(40, f[4].toInt() and 0xFF)    // 100 000 % 60 = 40 s
+        assertEquals(0xFF, f[7].toInt() and 0xFF)  // cadence u16
         assertEquals(0xFF, f[8].toInt() and 0xFF)
-        assertEquals(255, f[12].toInt() and 0xFF)  // FC
-        assertEquals(0, f[16].toInt() and 0xFF)    // cadence négative -> 0
-        assertEquals(0, f[19].toInt() and 0xFF)    // kcal négatives -> 0
+        assertEquals(0, f[12].toInt() and 0xFF)    // pace négative -> 0
+        assertEquals(0, f[13].toInt() and 0xFF)
+        assertEquals(0, f[15].toInt() and 0xFF)    // kcal négatives -> 0
+        assertEquals(0xFF, f[16].toInt() and 0xFF) // cadence capée à 255
+        assertEquals(0, f[19].toInt() and 0xFF)    // distance négative -> 0
         assertEquals(0, f[20].toInt() and 0xFF)
     }
 }

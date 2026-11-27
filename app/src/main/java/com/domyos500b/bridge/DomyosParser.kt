@@ -1,5 +1,7 @@
 package com.domyos500b.bridge
 
+import kotlin.math.roundToInt
+
 /**
  * Parseur du protocole propriétaire des rameurs Domyos (Domyos-ROW-*, ex. 500B).
  *
@@ -55,50 +57,76 @@ object DomyosParser {
     // Écriture vers l'écran du rameur (protocole « changyow », cf. qdomyos-zwift
     // domyosrower::updateDisplay) : quand un central BLE est connecté, la console
     // attend que l'app lui renvoie les valeurs à afficher (comme Kinomap).
-    // Deux trames de 27 octets, checksum = somme des 26 premiers octets & 0xFF :
-    // - `f0 cd` : distance (octets 3-4, u16 BE, unité 0,1 km = valeur brute 12-13
-    //   du paquet reçu) ;
-    // - `f0 cb` : octets 3-4 = temps écoulé min/sec, 7-8 = vitesse km/h (u16 BE),
-    //   12 = FC, 16 = cadence spm, 19-20 = kcal (u16 BE).
+    // Deux trames de 27 octets, checksum = somme des 26 premiers octets & 0xFF.
+    //
+    // **Mapping empirique du firmware du Domyos 500B** (photos de la console en
+    // mode BT, cf. docs/protocole-domyos.md §3) — il diffère du changyow de
+    // qdomyos (vitesse en 7-8, FC en 12, kcal en 19-20) :
+    // - `f0 cb` octet 3 = minutes, octet 4 = secondes -> champ **Time** (affiché
+    //   en %04d de min*60+sec : 11 min 44 s -> "0704") ;
+    // - octets 7-8 (u16 BE) -> champ **Spm** (3 chiffres, mod 1000 : 4370 -> "370") ;
+    // - octets 12-13 (u16 **LE**) -> champ **Time/500M** affiché "M:SS" avec
+    //   min = v/100, sec = v%100 (81 -> "0:81", 100 -> "1:00") : on y encode
+    //   le pace en min*100+sec (ex. 3:40 -> 340) ;
+    // - octet 15 -> champ **Kcal** ;
+    // - octets 19-20 -> champ **Km** affiché "hi.lo" (12 -> "0.12", 2 -> "00.2") :
+    //   on y encode partie entière en 19 et centièmes de km en 20 ;
+    // - octet 16 = cadence (champ non visible sur le 500B en mode BT, gardé tel quel) ;
+    // - champ **Count** = compteur de coups propre à la console (pas piloté par la trame).
+    // - `f0 cd` octets 3-4 = distance u16 BE en unités de 0,1 km (odometer*10 chez
+    //   qdomyos) — sur le 500B le champ Km semble lu dans `f0 cb` 19-20, la trame
+    //   `f0 cd` est envoyée quand même par compatibilité.
     // Chaque trame est écrite en 2 paquets (20 + 7 octets) comme qdomyos-zwift,
     // pour rester sous le MTU 23 si le module ne négocie pas plus.
     // ------------------------------------------------------------------
 
-    /** Trame `f0 cb` : temps, vitesse, FC, cadence, calories pour l'écran du rameur. */
+    /**
+     * Trame `f0 cb` pour l'écran du Domyos 500B : temps, cadence (Spm), pace
+     * (Time/500M), kcal et distance (Km) — voir le mapping ci-dessus.
+     */
     fun buildDisplayFrame(
         elapsedSec: Int,
-        speedKmh: Int,
-        hrBpm: Int,
         cadenceSpm: Int,
-        caloriesKcal: Int
+        paceSecPer500m: Int,
+        caloriesKcal: Int,
+        distanceMeters: Int
     ): ByteArray {
         val f = byteArrayOf(
             0xF0.toByte(), 0xCB.toByte(), 0x03, 0, 0, 0xFF.toByte(), 0x01, 0, 0,
             0x02, 0x01, 0, 0, 0, 0x01, 0, 0, 0x01, 0x01, 0, 0, 0x01,
             0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0
         )
-        f[3] = (elapsedSec / 60).coerceIn(0, 255).toByte()
-        f[4] = (elapsedSec % 60).toByte()
-        val spd = speedKmh.coerceIn(0, 0xFFFF)
-        f[7] = (spd shr 8).toByte()
-        f[8] = spd.toByte()
-        f[12] = hrBpm.coerceIn(0, 255).toByte()
-        f[16] = cadenceSpm.coerceIn(0, 255).toByte()
-        val cal = caloriesKcal.coerceIn(0, 0xFFFF)
-        f[19] = (cal shr 8).toByte()
-        f[20] = cal.toByte()
+        f[3] = (elapsedSec / 60).coerceIn(0, 255).toByte()   // Time : minutes
+        f[4] = (elapsedSec % 60).toByte()                     // Time : secondes
+        val spm = cadenceSpm.coerceIn(0, 0xFFFF)
+        f[7] = (spm shr 8).toByte()                           // Spm (u16 BE, 3 chiffres)
+        f[8] = spm.toByte()
+        val paceVal = if (paceSecPer500m > 0) (paceSecPer500m / 60) * 100 + (paceSecPer500m % 60) else 0
+        val pv = paceVal.coerceIn(0, 0xFFFF)
+        f[12] = (pv and 0xFF).toByte()                        // Time/500M (u16 LE, min*100+sec)
+        f[13] = (pv shr 8).toByte()
+        f[15] = caloriesKcal.coerceIn(0, 255).toByte()        // Kcal
+        f[16] = cadenceSpm.coerceIn(0, 255).toByte()          // cadence (champ non visible)
+        val km = distanceMeters.coerceIn(0, Int.MAX_VALUE) / 1000.0
+        val kmInt = km.toInt().coerceIn(0, 255)
+        val kmFrac = ((km - kmInt) * 100).roundToInt().coerceIn(0, 99)
+        f[19] = kmInt.toByte()                                // Km : partie entière
+        f[20] = kmFrac.toByte()                               // Km : centièmes
         f[26] = checksum(f)
         return f
     }
 
-    /** Trame `f0 cd` : distance affichée sur l'écran du rameur (unité 0,1 km). */
-    fun buildDistanceDisplayFrame(distanceUnits: Int): ByteArray {
+    /**
+     * Trame `f0 cd` : distance affichée sur l'écran du rameur, en unités de 0,1 km
+     * (u16 BE en octets 3-4), comme `odometer() * 10` chez qdomyos-zwift.
+     */
+    fun buildDistanceDisplayFrame(distanceMeters: Int): ByteArray {
         val f = ByteArray(27) { 0xFF.toByte() }
         f[0] = 0xF0.toByte()
         f[1] = 0xCD.toByte()
         f[2] = 0x01
         f[5] = 0x01
-        val d = distanceUnits.coerceIn(0, 0xFFFF)
+        val d = (distanceMeters.coerceIn(0, Int.MAX_VALUE) / 10).coerceIn(0, 0xFFFF)
         f[3] = (d shr 8).toByte()
         f[4] = d.toByte()
         f[26] = checksum(f)
@@ -109,9 +137,8 @@ object DomyosParser {
     // Diagnostic : trames « marqueurs ». Chaque octet de données reçoit une
     // valeur distincte (10 + index) pour identifier empiriquement — via une
     // photo de la console du 500B — quel octet pilote quel champ de l'écran.
-    // (Sur le firmware du 500B, la disposition constatée ne correspond pas
-    // exactement à celle du changyow de qdomyos : la distance semblerait lue
-    // en octets 19-20 et les kcal en 13-14.)
+    // (Mapping 500B confirmé par photos : Spm <- 7-8, Time/500M <- 12-13,
+    // Kcal <- 15, Km <- 19-20, Time <- 3-4.)
     // ------------------------------------------------------------------
 
     /** Trame `f0 cb` marqueur : octet i = 10+i pour i in 3..25 (sauf 5,6 structurels). */
