@@ -12,6 +12,7 @@ data class RowerMetrics(
     val paceSecPer500m: Int,     // secondes par 500 m (0 = absent)
     val powerWatts: Int,         // Watts (déjà normalisée : fallback via pace si le rameur envoie 0)
     val heartRateBpm: Int = 0,   // FC (0 = absente) — relayée via le service 0x180D, pas via 2AD1
+    val caloriesKcal: Int = 0,   // kcal (octets 10-11 des paquets Domyos) — affichage écran du rameur
     val rawHex: String
 )
 

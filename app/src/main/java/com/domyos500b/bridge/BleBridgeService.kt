@@ -101,6 +101,14 @@ class BleBridgeService : Service() {
     @Volatile
     private var latestFrame: ByteArray = FtmsParser.idleFrame()
 
+    /** Dernières métriques brutes reçues du rameur (pour le rafraîchissement de sa console). */
+    @Volatile
+    private var latestRawMetrics: RowerMetrics? = null
+
+    /** Début de session (premier coup détecté) : sert au temps affiché sur l'écran du rameur. */
+    @Volatile
+    private var sessionStartMs = 0L
+
     @Volatile
     private var running = false
 
@@ -208,6 +216,8 @@ class BleBridgeService : Service() {
         integratedDistanceM = 0.0
         lastMetricsTimeMs = 0L
         lastStrokeCount = -1
+        latestRawMetrics = null
+        sessionStartMs = 0L
         BridgeBus.setServiceRunning(false)
         BridgeBus.setAdvertising(false)
         BridgeBus.setDomyosConnected(false)
@@ -388,9 +398,14 @@ class BleBridgeService : Service() {
         val now = System.currentTimeMillis()
         val dt = if (lastMetricsTimeMs > 0L) ((now - lastMetricsTimeMs) / 1000.0).coerceIn(0.0, 2.0) else 0.0
         lastMetricsTimeMs = now
-        if (lastStrokeCount >= 0 && m.strokeCount < lastStrokeCount) integratedDistanceM = 0.0 // nouvelle session
+        if (lastStrokeCount >= 0 && m.strokeCount < lastStrokeCount) {
+            integratedDistanceM = 0.0 // nouvelle session
+            sessionStartMs = 0L
+        }
         lastStrokeCount = m.strokeCount
         if (m.paceSecPer500m > 0) integratedDistanceM += (500.0 / m.paceSecPer500m) * dt
+        if (sessionStartMs == 0L && (m.strokeCount > 0 || m.strokeRateSpm > 0.0)) sessionStartMs = now
+        latestRawMetrics = m
         val mEff = m.copy(distanceMeters = integratedDistanceM.roundToInt())
         BridgeBus.publish(mEff)
         latestFrame = FtmsParser.buildNormalizedFrame(mEff)
@@ -445,7 +460,8 @@ class BleBridgeService : Service() {
         }
         proprietaryActive = true
         startKeepalive()
-        BridgeBus.log("Session Domyos propriétaire active (init envoyée, keepalive 1 Hz)")
+        startDisplayTicker()
+        BridgeBus.log("Session Domyos propriétaire active (init envoyée, keepalive 1 Hz, écran 1 Hz)")
     }
 
     private suspend fun writeDomyos(value: ByteArray) {
@@ -467,6 +483,39 @@ class BleBridgeService : Service() {
             while (running && proprietaryActive) {
                 delay(1_000)
                 if (proprietaryActive) writeDomyos(BleConstants.DOMYOS_KEEPALIVE)
+            }
+        }
+    }
+
+    /**
+     * Rafraîchit l'écran du rameur à 1 Hz en lui renvoyant ses propres métriques
+     * (trames `f0 cd` distance + `f0 cb` temps/vitesse/FC/cadence/kcal), comme le
+     * fait Kinomap ou qdomyos-zwift quand un central est connecté : sans ces trames,
+     * la console du 500B n'affiche pas les données de la session.
+     * Chaque trame de 27 octets est écrite en 2 paquets (20 + 7) pour tenir dans
+     * un MTU 23 si le module ne négocie pas davantage.
+     */
+    private fun startDisplayTicker() {
+        scope.launch {
+            while (running && proprietaryActive) {
+                delay(1_000)
+                if (!proprietaryActive) break
+                val m = latestRawMetrics ?: continue
+                val elapsedSec =
+                    if (sessionStartMs > 0L) ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
+                    else 0
+                val speedKmh = if (m.paceSecPer500m > 0) 1800 / m.paceSecPer500m else 0
+                val frames = listOf(
+                    DomyosParser.buildDistanceDisplayFrame(m.distanceMeters),
+                    DomyosParser.buildDisplayFrame(
+                        elapsedSec, speedKmh, m.heartRateBpm,
+                        m.strokeRateSpm.roundToInt(), m.caloriesKcal
+                    )
+                )
+                for (frame in frames) {
+                    writeDomyos(frame.copyOfRange(0, 20))
+                    writeDomyos(frame.copyOfRange(20, frame.size))
+                }
             }
         }
     }
