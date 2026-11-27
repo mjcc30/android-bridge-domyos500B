@@ -41,7 +41,11 @@ object FtmsParser {
      * champs demandés. Les 5 champs demandés (Stroke Rate + Stroke Count +
      * Total Distance + Instantaneous Pace + Instantaneous Power) correspondent
      * exactement aux bits 1 à 5, soit **0x003E** — c'est cette valeur, conforme
-     * à la spec FTMS, qui est émise (trame de 12 octets).
+     * à la spec FTMS, qui est émise (trame de 16 octets).
+     *
+     * NOTE (MyWhoosh 6.3.0, Sensor.ReadGenericRower) : le client exige une trame
+     * d'au moins 31 caractères hexadécimaux, soit **16 octets minimum** — une
+     * trame de 12 octets est ignorée silencieusement (affichage à 0 W).
      */
     const val NORMALIZED_FLAGS = 0x003E
 
@@ -110,12 +114,16 @@ object FtmsParser {
     }
 
     /**
-     * Reconstruit une trame 0x2AD1 normalisée (12 octets, flags [NORMALIZED_FLAGS])
+     * Reconstruit une trame 0x2AD1 normalisée (16 octets, flags [NORMALIZED_FLAGS])
      * directement consommable par MyWhoosh :
-     * flags(2) | strokeRate(1, x2) | strokeCount(2) | distance(3) | pace(2) | power(2, sint16).
+     * flags(2) | strokeRate(1, x2) | strokeCount(2) | distance(3) | pace(2) | power(2, sint16) | 4 octets de padding.
+     *
+     * Les 4 derniers octets sont lus mais ignorés par le parseur de MyWhoosh
+     * (bits 6 et 10 à 0) ; ils portent la trame à 16 octets, seuil minimal exigé
+     * par Sensor.ReadGenericRower (str.length() >= 31 caractères hex).
      */
     fun buildNormalizedFrame(m: RowerMetrics): ByteArray {
-        val out = ByteArray(12)
+        val out = ByteArray(16)
         out[0] = (NORMALIZED_FLAGS and 0xFF).toByte()
         out[1] = ((NORMALIZED_FLAGS shr 8) and 0xFF).toByte()
         out[2] = (m.strokeRateSpm * 2).roundToInt().coerceIn(0, 255).toByte()
