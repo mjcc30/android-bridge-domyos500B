@@ -3,6 +3,7 @@ package com.domyos500b.bridge
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -111,6 +112,53 @@ class DomyosParserTest {
             for (i in 0 until 26) sum += frame[i].toInt() and 0xFF
             assertEquals("frame ${frame.toHex()}", (sum and 0xFF).toByte(), frame[26])
         }
+    }
+
+    @Test
+    fun resistanceFrameMatchesQdomyosForceResistance() {
+        // niveau 10 : checksum calculé comme le code C de qdomyos (octet 22 accumulé à partir de 0xFF, boucle i=0..22)
+        val f = DomyosParser.buildResistanceFrame(10)
+        assertEquals(24, f.size)
+        assertArrayEquals(
+            hex("F0 AD FF FF FF FF FF FF FF FF 0A FF FF FF FF FF FF FF 00 01 FF FF 2C 00"),
+            f
+        )
+    }
+
+    @Test
+    fun resistanceFrameClampsLevel() {
+        assertEquals(0, DomyosParser.buildResistanceFrame(-3)[10].toInt() and 0xFF)
+        assertEquals(255, DomyosParser.buildResistanceFrame(999)[10].toInt() and 0xFF)
+    }
+
+    @Test
+    fun parseRealPacket_readsResistanceLevel() {
+        // octet 14 = 0x01 -> niveau 1 (log 16:17:18)
+        val m = DomyosParser.parse(
+            hex("F0 BC 00 16 00 00 00 00 00 00 00 04 00 01 01 00 01 00 5E 00 13 00 00 00 01 3B")
+        )!!
+        assertEquals(1, m.resistanceLevel)
+        assertEquals(94, m.heartRateBpm)
+    }
+
+    @Test
+    fun initSequenceFramesAreWellFormed() {
+        // séquence changyow complète (qdomyos-zwift btinit_changyow), 11 trames
+        assertEquals(11, BleConstants.DOMYOS_INIT.size)
+        for (f in BleConstants.DOMYOS_INIT) {
+            assertEquals(0xF0.toByte(), f[0])
+            assertTrue(f.size >= 3)
+        }
+        assertEquals(23, BleConstants.DOMYOS_INIT[7].size)  // f0 ad init
+        assertEquals(27, BleConstants.DOMYOS_INIT[8].size)  // f0 cb 02 … mode BT
+        assertEquals(24, BleConstants.DOMYOS_INIT[9].size)  // f0 ad init 2
+        assertEquals(28, BleConstants.DOMYOS_INIT[10].size) // f0 cb ff … start tape
+    }
+
+    @Test
+    fun hexBytesRoundTrip() {
+        assertArrayEquals(hex("F0 C8 01 B9"), hexBytes("F0 C8 01 B9"))
+        assertEquals("F0 C8 01 B9", hexBytes("F0 C8 01 B9").toHex())
     }
 
     @Test

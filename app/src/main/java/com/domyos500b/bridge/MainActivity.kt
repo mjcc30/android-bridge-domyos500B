@@ -152,6 +152,31 @@ fun BridgeScreen() {
                 Modifier.weight(1f)
             )
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MetricsCard(
+                "FC",
+                if (metrics.heartRateBpm > 0) "${metrics.heartRateBpm} bpm" else "--",
+                Modifier.weight(1f)
+            )
+            MetricsCard(
+                "Résistance",
+                if (uiState.resistanceLevel > 0) "${uiState.resistanceLevel} / 15" else "--",
+                Modifier.weight(1f)
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(
+                onClick = { sendResistance(context, uiState.resistanceLevel, -1) },
+                enabled = uiState.serviceRunning && uiState.domyosConnected
+            ) { Text("Résistance −") }
+            OutlinedButton(
+                onClick = { sendResistance(context, uiState.resistanceLevel, +1) },
+                enabled = uiState.serviceRunning && uiState.domyosConnected
+            ) { Text("Résistance +") }
+        }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
@@ -263,4 +288,15 @@ private fun MetricsCard(label: String, value: String, modifier: Modifier = Modif
 private fun formatPace(paceSecPer500m: Int): String {
     if (paceSecPer500m <= 0) return "--:-- /500m"
     return String.format("%d:%02d /500m", paceSecPer500m / 60, paceSecPer500m % 60)
+}
+
+/** Envoie une commande de réglage de résistance au service (trame `f0 ad …`). */
+private fun sendResistance(context: Context, current: Int, delta: Int) {
+    val base = if (current in BleBridgeService.RESISTANCE_MIN..BleBridgeService.RESISTANCE_MAX) current else 8
+    val level = (base + delta).coerceIn(BleBridgeService.RESISTANCE_MIN, BleBridgeService.RESISTANCE_MAX)
+    context.startService(
+        Intent(context, BleBridgeService::class.java)
+            .setAction(BleBridgeService.ACTION_SET_RESISTANCE)
+            .putExtra(BleBridgeService.EXTRA_RESISTANCE_LEVEL, level)
+    )
 }

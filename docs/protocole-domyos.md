@@ -127,13 +127,14 @@ F0 CB 03 00 03 FF 01 00 09 02 01 00 00 00 01 00 1B 01 01 00   (20 octets)
 04 01 FF FF FF FF EC                                            (7 octets, EC = checksum)
 ```
 
-## 4. Autres commandes connues (non utilisées par le pont)
+## 4. Autres commandes
 
-| Commande | Fonction |
-|---|---|
-| `F0 AD …` (23 octets) | résistance forcée (`forceResistance` qdomyos-zwift, octet 10 = niveau) |
-| `F0 E3 <n+1> <cksum>` | inclinaison forcée (`forceInclination`) |
-| `F0 CC FF FF FF FF 01 FF B8` | variante d'init « telink » (MAC commençant par `57`) |
+| Commande | Fonction | Utilisée par le pont |
+|---|---|---|
+| `F0 AD …` (24 octets) | **résistance forcée** (`forceResistance` qdomyos-zwift, octet 10 = niveau 1-15, checksum accumulé in situ depuis 0xFF) | oui — boutons app + relais FTMS 0x04 |
+| `F0 E3 <n+1> <cksum>` | inclinaison forcée (`forceInclination`) | non |
+| `F0 CC FF FF FF FF 01 FF B8` | variante d'init « telink » (MAC commençant par `57`) | non (500B = changyow) |
+| `F0 C8 00 B8` | « stop tape » | non (réservé arrêt de session) |
 
 ## 5. Côté FTMS exposé au central (MyWhoosh)
 

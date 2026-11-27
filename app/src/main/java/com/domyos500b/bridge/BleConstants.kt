@@ -63,13 +63,33 @@ object BleConstants {
     val DOMYOS_WRITE: UUID = UUID.fromString("49535343-8841-43f4-a8d4-ecbe34729bb3")
     val DOMYOS_NOTIFY: UUID = UUID.fromString("49535343-1e4d-4bd9-ba61-23c647249616")
 
-    /** Séquence d'init « changyow » envoyée à chaque connexion. */
+    /**
+     * Séquence d'init « changyow » COMPLÈTE envoyée à chaque connexion (identique à
+     * `btinit_changyow` de qdomyos-zwift, octets copiés tels quels). Au-delà des 3
+     * premières trames, elle contient notamment :
+     * - `f0 cb 02 00 08 …` : passe la console en mode « affichage piloté par l'app »
+     *   (icône/word BT) — sans ça, l'écran du rameur n'affiche pas les trames f0 cb/f0 cd ;
+     * - `f0 cb ff …` : « start tape » ;
+     * - deux trames `f0 ad …` d'init de la résistance.
+     * Chaque trame est écrite en paquets de 20 octets max (voir writeDomyosFrame).
+     */
     val DOMYOS_INIT: List<ByteArray> = listOf(
-        byteArrayOf(0xF0.toByte(), 0xC8.toByte(), 0x01, 0xB9.toByte()),
-        byteArrayOf(0xF0.toByte(), 0xC9.toByte(), 0xB9.toByte()),
-        byteArrayOf(0xF0.toByte(), 0xA3.toByte(), 0x93.toByte())
+        hexBytes("F0 C8 01 B9"),
+        hexBytes("F0 C9 B9"),
+        hexBytes("F0 A3 93"),
+        hexBytes("F0 A4 94"),
+        hexBytes("F0 A5 95"),
+        hexBytes("F0 AB 9B"),
+        hexBytes("F0 C4 03 B7"),
+        hexBytes("F0 AD FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 01 FF FF FF 8B"), // 23 o
+        hexBytes("F0 CB 02 00 08 FF FF FF FF FF FF FF FF FF FF FF FF FF 01 00 00 01 FF FF FF FF B6"), // 27 o, mode BT
+        hexBytes("F0 AD FF FF 00 05 FF FF FF FF FF FF FF FF 00 00 FF FF FF 01 FF FF FF 94"), // 24 o
+        hexBytes("F0 CB FF FF FF FF FF FF FF FF FF FF FF FF FF FF 01 00 14 01 FF FF FF FF FF FF FF BD") // 28 o, start tape
     )
 
     /** Keepalive envoyé chaque seconde tant que la session propriétaire est active. */
     val DOMYOS_KEEPALIVE: ByteArray = byteArrayOf(0xF0.toByte(), 0xAC.toByte(), 0x9C.toByte())
+
+    /** Opcode Control Point FTMS 0x2AD9 : Set Target Resistance (relayé vers le rameur). */
+    const val OP_SET_TARGET_RESISTANCE: Byte = 0x04
 }

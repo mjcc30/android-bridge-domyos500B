@@ -74,9 +74,16 @@ Bouton **« Envoyer les logs »** : partage la console interne (trames hex TX/RX
   `0x003E`) notifiée à **4 Hz**, service Heart Rate `0x180D`/2A37 pour la FC.
   Toute écriture sur le Control Point 2AD9 est validée (indication `80 <op> 01`) et
   les opcodes 0x00 / 0x07 sont relayés vers le rameur.
-- **Écran du rameur** : à 1 Hz, le pont renvoie au 500B ses propres métriques via les
-  trames d'affichage `f0 cd` (distance) et `f0 cb` (temps, vitesse, FC, cadence, kcal),
-  comme Kinomap / qdomyos-zwift — sinon la console n'affiche rien une fois connectée.
+- **Écran du rameur** : la connexion envoie la séquence d'init « changyow » **complète**
+  (11 trames, dont `f0 cb 02 …` qui passe la console en mode « affichage piloté par
+  l'app » et `f0 cb ff …` « start tape »), puis à 1 Hz le pont renvoie au 500B ses
+  propres métriques via les trames d'affichage `f0 cd` (distance) et `f0 cb` (temps,
+  vitesse, FC, cadence, kcal), comme Kinomap / qdomyos-zwift.
+- **FC** : quand le rameur renvoie 0 (ceinture perdue ou pause), la dernière valeur
+  connue est conservée 30 s avant d'afficher 0 (évite le « 0 bpm » dans MyWhoosh).
+- **Résistance** : réglable depuis l'app (boutons « Résistance −/+ », trame `f0 ad …`
+  niveau 1-15) et relayée depuis MyWhoosh via le Control Point FTMS opcode 0x04
+  (Set Target Resistance). Le niveau lu (octet 14 des paquets `f0 bc`) est affiché.
 
 ## Deux bugs framework Android contournés
 
@@ -116,8 +123,9 @@ release versionnée avec QR code.
 
 ## Limitations connues
 
-- Pont unidirectionnel pour le contrôle : seuls les opcodes 0x00/0x07 du Control Point
-  sont relayés vers le rameur (pas de réglage de résistance/cible depuis MyWhoosh).
+- Pont quasi unidirectionnel pour le contrôle : opcodes 0x00/0x07 relayés tels quels,
+  0x04 (résistance) converti en niveau 1-15 ; pas de mode ERG (cible de puissance
+  0x05 non relayée vers le rameur).
 - La puissance affichée est **recalculée depuis le pace** (le 500B ne la mesure pas en
   BLE propriétaire).
 - La distance envoyée à MyWhoosh est l'intégration locale (plus fidèle que le compteur

@@ -12,6 +12,7 @@ data class BridgeUiState(
     val advertising: Boolean = false,
     val domyosConnected: Boolean = false,
     val mywhooshConnected: Boolean = false,
+    val resistanceLevel: Int = 0, // niveau de résistance actuel du rameur (1-15)
     val logs: List<String> = emptyList()
 )
 
@@ -22,6 +23,7 @@ data class MetricsUi(
     val strokeRateSpm: Double = 0.0,
     val strokeCount: Int = 0,
     val distanceMeters: Int = 0,
+    val heartRateBpm: Int = 0,
     val rawHex: String = ""
 )
 
@@ -41,6 +43,7 @@ object BridgeBus {
     fun setAdvertising(v: Boolean) = uiState.update { it.copy(advertising = v) }
     fun setDomyosConnected(v: Boolean) = uiState.update { it.copy(domyosConnected = v) }
     fun setMyWhooshConnected(v: Boolean) = uiState.update { it.copy(mywhooshConnected = v) }
+    fun setResistance(v: Int) = uiState.update { it.copy(resistanceLevel = v) }
 
     fun log(line: String) {
         val ts = tsFormat.format(Date())
@@ -58,6 +61,7 @@ object BridgeBus {
             strokeRateSpm = m.strokeRateSpm,
             strokeCount = m.strokeCount,
             distanceMeters = m.distanceMeters,
+            heartRateBpm = m.heartRateBpm,
             rawHex = m.rawHex
         )
     }

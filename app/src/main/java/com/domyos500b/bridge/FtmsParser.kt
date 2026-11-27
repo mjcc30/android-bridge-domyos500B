@@ -13,6 +13,7 @@ data class RowerMetrics(
     val powerWatts: Int,         // Watts (déjà normalisée : fallback via pace si le rameur envoie 0)
     val heartRateBpm: Int = 0,   // FC (0 = absente) — relayée via le service 0x180D, pas via 2AD1
     val caloriesKcal: Int = 0,   // kcal (octets 10-11 des paquets Domyos) — affichage écran du rameur
+    val resistanceLevel: Int = 0, // niveau de résistance (octet 14 des paquets Domyos, 1-15)
     val rawHex: String
 )
 
@@ -157,3 +158,7 @@ object FtmsParser {
 }
 
 fun ByteArray.toHex(): String = joinToString(" ") { "%02X".format(it) }
+
+/** Inverse de [toHex] : "F0 C8 01 B9" -> octets (pour définir des trames constantes lisibles). */
+fun hexBytes(s: String): ByteArray =
+    s.split(" ").filter { it.isNotEmpty() }.map { it.toInt(16).toByte() }.toByteArray()

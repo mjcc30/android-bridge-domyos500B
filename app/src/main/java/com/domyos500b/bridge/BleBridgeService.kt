@@ -69,9 +69,15 @@ class BleBridgeService : Service() {
         const val CHANNEL_ID = "domyos_bridge_channel"
         const val NOTIF_ID = 1001
         const val ACTION_STOP = "com.domyos500b.bridge.ACTION_STOP"
+        const val ACTION_SET_RESISTANCE = "com.domyos500b.bridge.ACTION_SET_RESISTANCE"
+        const val EXTRA_RESISTANCE_LEVEL = "resistance_level"
         private const val NOTIFY_PERIOD_MS = 250L   // 4 Hz
         private const val RECONNECT_DELAY_MS = 2_000L
         private const val MTU_REQUEST = 247
+        /** Délai pendant lequel on conserve la dernière FC connue quand le rameur renvoie 0. */
+        private const val HR_HOLD_MS = 30_000L
+        const val RESISTANCE_MIN = 1
+        const val RESISTANCE_MAX = 15
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -109,6 +115,14 @@ class BleBridgeService : Service() {
     @Volatile
     private var sessionStartMs = 0L
 
+    /** Dernière FC non nulle reçue + son horodatage : on la conserve [HR_HOLD_MS] quand le rameur renvoie 0. */
+    private var lastHrValue = 0
+    private var lastHrTimeMs = 0L
+
+    /** Niveau de résistance courant du rameur (1-15), réglable depuis l'app ou via FTMS 0x2AD9 (0x04). */
+    @Volatile
+    private var currentResistance = 8
+
     @Volatile
     private var running = false
 
@@ -138,6 +152,11 @@ class BleBridgeService : Service() {
         if (intent?.action == ACTION_STOP) {
             shutdown()
             return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_SET_RESISTANCE) {
+            val level = intent.getIntExtra(EXTRA_RESISTANCE_LEVEL, currentResistance)
+            scope.launch { setRowerResistance(level) }
+            return START_STICKY
         }
 
         // CONTRAINTE ANDROID 16 : jamais de startForeground() sans les permissions BT.
@@ -218,6 +237,10 @@ class BleBridgeService : Service() {
         lastStrokeCount = -1
         latestRawMetrics = null
         sessionStartMs = 0L
+        lastHrValue = 0
+        lastHrTimeMs = 0L
+        currentResistance = 8
+        BridgeBus.setResistance(0)
         BridgeBus.setServiceRunning(false)
         BridgeBus.setAdvertising(false)
         BridgeBus.setDomyosConnected(false)
@@ -332,6 +355,10 @@ class BleBridgeService : Service() {
                 BridgeBus.setDomyosConnected(false)
                 proprietaryActive = false
                 domyosWriteChar = null
+                lastHrValue = 0
+                lastHrTimeMs = 0L
+                sessionStartMs = 0L
+                BridgeBus.setResistance(0)
                 BridgeBus.log("Domyos DÉCONNECTÉ (status=$status) -> reconnexion auto dans ${RECONNECT_DELAY_MS} ms")
                 resumePending(false)
                 try { g.close() } catch (_: Exception) {}
@@ -401,15 +428,32 @@ class BleBridgeService : Service() {
         if (lastStrokeCount >= 0 && m.strokeCount < lastStrokeCount) {
             integratedDistanceM = 0.0 // nouvelle session
             sessionStartMs = 0L
+            lastHrValue = 0
+            lastHrTimeMs = 0L
         }
         lastStrokeCount = m.strokeCount
         if (m.paceSecPer500m > 0) integratedDistanceM += (500.0 / m.paceSecPer500m) * dt
         if (sessionStartMs == 0L && (m.strokeCount > 0 || m.strokeRateSpm > 0.0)) sessionStartMs = now
-        latestRawMetrics = m
-        val mEff = m.copy(distanceMeters = integratedDistanceM.roundToInt())
+        // Hold FC : quand le rameur renvoie 0 (ceinture perdue ou pause), on conserve
+        // la dernière valeur connue pendant HR_HOLD_MS avant d'afficher 0.
+        val hrEff = when {
+            m.heartRateBpm > 0 -> {
+                lastHrValue = m.heartRateBpm
+                lastHrTimeMs = now
+                m.heartRateBpm
+            }
+            lastHrValue > 0 && now - lastHrTimeMs <= HR_HOLD_MS -> lastHrValue
+            else -> 0
+        }
+        if (m.resistanceLevel > 0) {
+            currentResistance = m.resistanceLevel
+            BridgeBus.setResistance(m.resistanceLevel)
+        }
+        latestRawMetrics = m.copy(heartRateBpm = hrEff)
+        val mEff = m.copy(distanceMeters = integratedDistanceM.roundToInt(), heartRateBpm = hrEff)
         BridgeBus.publish(mEff)
         latestFrame = FtmsParser.buildNormalizedFrame(mEff)
-        latestHr = m.heartRateBpm
+        latestHr = hrEff
         BridgeBus.log(
             "   parse: ${m.strokeRateSpm} spm | ${m.strokeCount} coups | " +
                 "${mEff.distanceMeters} m (intégrée) | pace=${m.paceSecPer500m}s/500m | ${m.powerWatts} W | ${m.heartRateBpm} bpm"
@@ -453,15 +497,42 @@ class BleBridgeService : Service() {
         }
         BridgeBus.log("CCCD notify Domyos: ${if (notifyOk) "OK" else "ÉCHEC"}")
 
-        // Séquence d'init « changyow », puis keepalive 1 Hz.
+        // Séquence d'init « changyow » COMPLÈTE (inclut le passage de la console en mode
+        // « affichage piloté par l'app » f0 cb 02 … et le « start tape »), puis keepalive 1 Hz.
         for (pkt in BleConstants.DOMYOS_INIT) {
-            writeDomyos(pkt)
-            delay(150)
+            writeDomyosFrame(pkt)
+            delay(120)
         }
         proprietaryActive = true
         startKeepalive()
         startDisplayTicker()
-        BridgeBus.log("Session Domyos propriétaire active (init envoyée, keepalive 1 Hz, écran 1 Hz)")
+        BridgeBus.log("Session Domyos propriétaire active (init complète ${BleConstants.DOMYOS_INIT.size} trames, keepalive 1 Hz, écran 1 Hz)")
+    }
+
+    /**
+     * Écrit une trame longue sur la caractéristique Domyos en paquets de 20 octets max
+     * (MTU 23), comme qdomyos-zwift — ex. trames d'affichage de 27 octets (20+7).
+     */
+    private suspend fun writeDomyosFrame(frame: ByteArray) {
+        var off = 0
+        while (off < frame.size) {
+            val end = minOf(off + 20, frame.size)
+            writeDomyos(frame.copyOfRange(off, end))
+            off = end
+        }
+    }
+
+    /**
+     * Règle la résistance du rameur (niveau 1-15) via la trame `f0 ad …`, envoyée
+     * depuis l'app (boutons +/-) ou relayée du Control Point FTMS (opcode 0x04).
+     */
+    suspend fun setRowerResistance(level: Int) {
+        val l = level.coerceIn(RESISTANCE_MIN, RESISTANCE_MAX)
+        val frame = DomyosParser.buildResistanceFrame(l)
+        BridgeBus.log("TX résistance -> niveau $l (trame ${frame.toHex()})")
+        writeDomyosFrame(frame)
+        currentResistance = l
+        BridgeBus.setResistance(l)
     }
 
     private suspend fun writeDomyos(value: ByteArray) {
@@ -513,8 +584,7 @@ class BleBridgeService : Service() {
                     )
                 )
                 for (frame in frames) {
-                    writeDomyos(frame.copyOfRange(0, 20))
-                    writeDomyos(frame.copyOfRange(20, frame.size))
+                    writeDomyosFrame(frame)
                 }
             }
         }
@@ -749,8 +819,17 @@ class BleBridgeService : Service() {
                 }
                 BridgeBus.log("TX CP  -> ${response.toHex()} (Response, indication)")
                 // Relais vers le rameur pour garder les deux sessions synchronisées.
-                if (opcode == BleConstants.OP_REQUEST_CONTROL || opcode == BleConstants.OP_START_OR_RESUME) {
-                    scope.launch { sendControlPointToRower(byteArrayOf(opcode)) }
+                when {
+                    opcode == BleConstants.OP_REQUEST_CONTROL || opcode == BleConstants.OP_START_OR_RESUME -> {
+                        scope.launch { sendControlPointToRower(byteArrayOf(opcode)) }
+                    }
+                    opcode == BleConstants.OP_SET_TARGET_RESISTANCE && value.size >= 2 -> {
+                        // Set Target Resistance : paramètre uint8 (0-255) -> niveau 1-15 du rameur.
+                        val v = value[1].toInt() and 0xFF
+                        val level = (RESISTANCE_MIN + v * (RESISTANCE_MAX - RESISTANCE_MIN) / 255)
+                            .coerceIn(RESISTANCE_MIN, RESISTANCE_MAX)
+                        scope.launch { setRowerResistance(level) }
+                    }
                 }
             } else if (responseNeeded && server != null) {
                 server.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)

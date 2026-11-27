@@ -32,8 +32,9 @@ object DomyosParser {
         val pace = u16be(6)
         val cadence = packet[9].toInt() and 0xFF
         val calories = u16be(10)
-        val heartRate = packet[18].toInt() and 0xFF
         val distance = u16be(12)
+        val resistance = packet[14].toInt() and 0xFF
+        val heartRate = packet[18].toInt() and 0xFF
         val power = FtmsParser.wattsFromPace(pace)
 
         return RowerMetrics(
@@ -45,6 +46,7 @@ object DomyosParser {
             powerWatts = power,
             heartRateBpm = heartRate,
             caloriesKcal = calories,
+            resistanceLevel = resistance,
             rawHex = packet.toHex()
         )
     }
@@ -108,5 +110,23 @@ object DomyosParser {
         var sum = 0
         for (i in 0 until frame.size - 1) sum += frame[i].toInt() and 0xFF
         return (sum and 0xFF).toByte()
+    }
+
+    /**
+     * Trame de réglage de la résistance `f0 ad …` (24 octets), identique à
+     * `domyosrower::forceResistance` de qdomyos-zwift : octet 10 = niveau (1-15).
+     * Le checksum est calculé exactement comme le code C d'origine (octet 22
+     * initialisé à 0xFF et accumulé dans la boucle, qui inclut i=22).
+     */
+    fun buildResistanceFrame(level: Int): ByteArray {
+        val f = ByteArray(24) { 0xFF.toByte() }
+        f[0] = 0xF0.toByte()
+        f[1] = 0xAD.toByte()
+        f[18] = 0x00
+        f[19] = 0x01
+        f[23] = 0x00
+        f[10] = level.coerceIn(0, 255).toByte()
+        for (i in 0 until 23) f[22] = (f[22].toInt() + f[i].toInt()).toByte() // comme le C (i=22 inclus)
+        return f
     }
 }
